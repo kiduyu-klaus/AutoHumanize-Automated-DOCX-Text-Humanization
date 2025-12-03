@@ -1,5 +1,5 @@
 import streamlit as st
-from texttohuman import process_docx_file, get_texttohuman_humanizer, split_text_by_words
+from texttohuman import process_docx_file, get_texttohuman_humanizer, split_text_by_words, read_docx
 import os
 import tempfile
 from datetime import datetime
@@ -148,6 +148,24 @@ st.markdown("""
         border-radius: 0.5rem;
         margin: 1rem 0;
     }
+    
+    /* Warning box */
+    .warning-box {
+        background: rgba(245, 158, 11, 0.1);
+        border-left: 4px solid #f59e0b;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    
+    /* Success box */
+    .success-box {
+        background: rgba(16, 185, 129, 0.1);
+        border-left: 4px solid #10b981;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -163,6 +181,8 @@ if 'stats' not in st.session_state:
         'failed': 0,
         'total_words': 0
     }
+if 'preserve_formatting' not in st.session_state:
+    st.session_state.preserve_formatting = True
 
 # Header
 st.markdown("""
@@ -178,9 +198,39 @@ with st.sidebar:
     
     mode = st.radio(
         "Select Mode",
-        ["📄 DOCX Upload", "✍️ Text Input"],
+        ["📄 DOCX Upload", "✏️ Text Input"],
         help="Choose how you want to input your text"
     )
+    
+    st.markdown("---")
+    
+    # Formatting options
+    st.markdown("### 📝 Formatting Options")
+    
+    preserve_formatting = st.checkbox(
+        "Preserve Document Formatting",
+        value=st.session_state.preserve_formatting,
+        help="Maintain bold headings, numbered lists, and structure from DOCX files"
+    )
+    st.session_state.preserve_formatting = preserve_formatting
+    
+    if preserve_formatting:
+        st.markdown("""
+            <div class="success-box">
+                <strong>✓ Formatting Enabled</strong><br>
+                • Bold text → Headings<br>
+                • Numbered lists preserved<br>
+                • Placeholder text [ignored]<br>
+                • Structure maintained
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+            <div class="warning-box">
+                <strong>⚠ Plain Text Mode</strong><br>
+                All formatting will be removed
+            </div>
+        """, unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -196,7 +246,7 @@ with st.sidebar:
     processing_timeout = st.slider(
         "Processing Timeout (seconds)",
         min_value=30,
-        max_value=120,
+        max_value=180,
         value=60,
         step=10,
         help="Maximum time to wait for each chunk"
@@ -209,7 +259,8 @@ with st.sidebar:
             <strong>💡 Tips:</strong><br>
             • Larger chunks = fewer API calls<br>
             • Increase timeout for long texts<br>
-            • Results are saved automatically
+            • Results are saved automatically<br>
+            • Enable formatting for DOCX files
         </div>
     """, unsafe_allow_html=True)
     
@@ -258,6 +309,10 @@ if mode == "📄 DOCX Upload":
                 </div>
             """, unsafe_allow_html=True)
         
+        # Show formatting info
+        if preserve_formatting:
+            st.info("✨ Formatting preservation is enabled. Bold headings, numbered lists, and structure will be maintained.")
+        
         st.markdown("</div>", unsafe_allow_html=True)
         
         # Process button
@@ -270,7 +325,7 @@ if mode == "📄 DOCX Upload":
                     tmp_path = tmp_file.name
                 
                 try:
-                    with st.spinner('🔄 Processing your document...'):
+                    with st.spinner('📄 Processing your document...'):
                         # Create progress container
                         progress_container = st.container()
                         
@@ -278,10 +333,18 @@ if mode == "📄 DOCX Upload":
                             progress_bar = st.progress(0)
                             status_text = st.empty()
                             
-                            # Import and read file
-                            from docx import Document
-                            doc = Document(tmp_path)
-                            full_text = '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
+                            # Read file with formatting preservation
+                            status_text.markdown("**📖 Reading document...**")
+                            if preserve_formatting:
+                                full_text = read_docx(tmp_path)  # Uses enhanced reader
+                                st.info("✓ Document read with formatting preserved")
+                            else:
+                                # Plain text mode
+                                from docx import Document
+                                doc = Document(tmp_path)
+                                full_text = '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
+                                st.info("✓ Document read in plain text mode")
+                            
                             chunks = split_text_by_words(full_text, max_words)
                             
                             total_chunks = len(chunks)
@@ -321,6 +384,9 @@ if mode == "📄 DOCX Upload":
                     
                 except Exception as e:
                     st.error(f"❌ Error processing file: {str(e)}")
+                    import traceback
+                    with st.expander("Show error details"):
+                        st.code(traceback.format_exc())
                 finally:
                     # Clean up temp file
                     if os.path.exists(tmp_path):
@@ -328,7 +394,7 @@ if mode == "📄 DOCX Upload":
 
 else:  # Text Input Mode
     st.markdown('<div class="custom-card">', unsafe_allow_html=True)
-    st.markdown("### ✍️ Enter Your Text")
+    st.markdown("### ✏️ Enter Your Text")
     
     input_text = st.text_area(
         "Paste your AI-generated text here",
@@ -339,7 +405,8 @@ else:  # Text Input Mode
     
     if input_text:
         word_count = len(input_text.split())
-        st.info(f"📊 Word count: **{word_count}** words | Will be split into **{(word_count // max_words) + 1}** chunks")
+        estimated_chunks = (word_count // max_words) + 1
+        st.info(f"📊 Word count: **{word_count}** words | Will be split into **{estimated_chunks}** chunks")
     
     st.markdown("</div>", unsafe_allow_html=True)
     
@@ -348,7 +415,7 @@ else:  # Text Input Mode
     with col2:
         if st.button("🚀 Humanize Text", disabled=not input_text, use_container_width=True):
             try:
-                with st.spinner('🔄 Processing your text...'):
+                with st.spinner('📄 Processing your text...'):
                     chunks = split_text_by_words(input_text, max_words)
                     total_chunks = len(chunks)
                     
@@ -394,6 +461,9 @@ else:  # Text Input Mode
                 
             except Exception as e:
                 st.error(f"❌ Error processing text: {str(e)}")
+                import traceback
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
 
 # Results section
 if st.session_state.processing_complete and st.session_state.humanized_text:
@@ -402,7 +472,7 @@ if st.session_state.processing_complete and st.session_state.humanized_text:
     st.markdown("### 📝 Humanized Results")
     
     # Display results in tabs
-    tab1, tab2 = st.tabs(["📄 Preview", "💾 Download"])
+    tab1, tab2, tab3 = st.tabs(["📄 Preview", "💾 Download", "📊 Analysis"])
     
     with tab1:
         st.text_area(
@@ -412,12 +482,18 @@ if st.session_state.processing_complete and st.session_state.humanized_text:
             help="Your humanized text appears here"
         )
         
+        # Quick copy button
+        if st.button("📋 Copy to Clipboard"):
+            st.code(st.session_state.humanized_text)
+            st.info("💡 Use Ctrl+A to select all, then Ctrl+C to copy")
+        
         # Statistics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Chunks", st.session_state.stats['total_chunks'])
         with col2:
-            st.metric("Successful", st.session_state.stats['successful'])
+            success_rate = (st.session_state.stats['successful'] / st.session_state.stats['total_chunks'] * 100) if st.session_state.stats['total_chunks'] > 0 else 0
+            st.metric("Success Rate", f"{success_rate:.1f}%")
         with col3:
             st.metric("Failed", st.session_state.stats['failed'])
         with col4:
@@ -425,17 +501,59 @@ if st.session_state.processing_complete and st.session_state.humanized_text:
     
     with tab2:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"humanized_text_{timestamp}.txt"
         
-        st.download_button(
-            label="⬇️ Download Humanized Text",
-            data=st.session_state.humanized_text,
-            file_name=filename,
-            mime="text/plain",
-            use_container_width=True
-        )
+        col1, col2 = st.columns(2)
         
-        st.info(f"💡 File will be saved as: **{filename}**")
+        with col1:
+            st.markdown("#### 📄 Text File")
+            filename_txt = f"humanized_text_{timestamp}.txt"
+            st.download_button(
+                label="⬇️ Download as TXT",
+                data=st.session_state.humanized_text,
+                file_name=filename_txt,
+                mime="text/plain",
+                use_container_width=True
+            )
+            st.caption(f"Saves as: {filename_txt}")
+        
+        with col2:
+            st.markdown("#### 📝 Markdown File")
+            filename_md = f"humanized_text_{timestamp}.md"
+            st.download_button(
+                label="⬇️ Download as MD",
+                data=st.session_state.humanized_text,
+                file_name=filename_md,
+                mime="text/markdown",
+                use_container_width=True
+            )
+            st.caption(f"Saves as: {filename_md}")
+        
+        st.markdown("---")
+        st.info("💡 **Tip:** Markdown (.md) files preserve formatting like headings and lists better than plain text files.")
+    
+    with tab3:
+        st.markdown("#### 📊 Processing Statistics")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Performance Metrics:**")
+            st.write(f"• Total chunks processed: {st.session_state.stats['total_chunks']}")
+            st.write(f"• Successfully humanized: {st.session_state.stats['successful']}")
+            st.write(f"• Failed chunks: {st.session_state.stats['failed']}")
+            success_rate = (st.session_state.stats['successful'] / st.session_state.stats['total_chunks'] * 100) if st.session_state.stats['total_chunks'] > 0 else 0
+            st.write(f"• Success rate: {success_rate:.1f}%")
+        
+        with col2:
+            st.markdown("**Content Analysis:**")
+            st.write(f"• Total words: {st.session_state.stats['total_words']}")
+            st.write(f"• Average words per chunk: {st.session_state.stats['total_words'] // st.session_state.stats['total_chunks'] if st.session_state.stats['total_chunks'] > 0 else 0}")
+            st.write(f"• Total characters: {len(st.session_state.humanized_text)}")
+            st.write(f"• Estimated reading time: {st.session_state.stats['total_words'] // 200} minutes")
+        
+        if st.session_state.stats['failed'] > 0:
+            st.markdown("---")
+            st.warning(f"⚠️ **Note:** {st.session_state.stats['failed']} chunk(s) failed to process and retained their original text. You may want to try processing them again separately.")
     
     st.markdown("</div>", unsafe_allow_html=True)
     
@@ -454,6 +572,9 @@ st.markdown("""
         <p>✨ <strong>TextToHuman</strong> - Powered by Advanced AI Humanization Technology</p>
         <p style="font-size: 0.9rem; margin-top: 0.5rem;">
             Made with ❤️ | Transform AI text into natural, human-like content
+        </p>
+        <p style="font-size: 0.8rem; margin-top: 0.5rem; color: #64748b;">
+            v2.0 - Now with formatting preservation support
         </p>
     </div>
 """, unsafe_allow_html=True)
