@@ -9,8 +9,10 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import time
 from docx import Document
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+from docx.shared import Cm
 
 LIST_OF_USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
@@ -351,7 +353,9 @@ def get_texttohuman_humanizer(humanize_text, timeout=15, processing_timeout=60):
                 thread_safe_print("Text entered using chunked send_keys")
 
             final_text = textarea_box.get_attribute('value')
-            thread_safe_print(f"Text length verification: Original: {len(humanize_text)}, Final: {len(final_text)}")
+            orig_len = len(humanize_text) if humanize_text is not None else 0
+            final_len = len(final_text) if final_text is not None else 0
+            thread_safe_print(f"Text length verification: Original: {orig_len}, Final: {final_len}")
                 
         time.sleep(2)
         
@@ -596,6 +600,85 @@ def process_docx_file(docx_path, output_path=None, max_words=1200, use_threading
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(final_text)
     
+    # Also save a DOCX version preserving basic formatting (headings, lists, bold)
+    try:
+        from docx import Document as _Document
+
+        def save_text_to_docx(docx_path_out, text):
+            """
+            Save plain/formatted text back into a DOCX file with simple formatting rules:
+            - Lines starting with '#' are treated as headings (number of '#' -> heading level)
+            - Lines matching 'N. text' (with optional indent) are numbered list items
+            - Lines starting with bullet characters (•, -, *) are bulleted list items
+            - Inline bold markers `**bold**` are converted to bold runs
+            """
+            doc_out = _Document()
+
+            for raw_line in text.splitlines():
+                # Preserve empty lines
+                if not raw_line.strip():
+                    doc_out.add_paragraph('')
+                    continue
+
+                line = raw_line.rstrip('\r\n')
+                stripped = line.lstrip()
+                indent = len(line) - len(stripped)
+                level = max(0, indent // 2)
+
+                # Headings: '#', '##', ...
+                if stripped.startswith('#'):
+                    hashes = len(stripped) - len(stripped.lstrip('#'))
+                    heading_text = stripped[hashes:].strip()
+                    heading_level = max(1, min(4, hashes))
+                    try:
+                        doc_out.add_paragraph(heading_text, style=f'Heading {heading_level}')
+                    except Exception:
+                        doc_out.add_paragraph(heading_text)
+                    continue
+
+                # Numbered list: optional indent + number + dot + space
+                m_num = re.match(r"^(\s*)(\d+)\.\s+(.*)$", line)
+                if m_num:
+                    item_text = m_num.group(3).strip()
+                    p = doc_out.add_paragraph(item_text, style='List Number')
+                    if level > 0:
+                        p.paragraph_format.left_indent = Cm(level * 0.5)
+                    continue
+
+                # Bulleted list (•, -, *)
+                m_bul = re.match(r"^(\s*)[•\-*]\s+(.*)$", line)
+                if m_bul:
+                    item_text = m_bul.group(2).strip()
+                    p = doc_out.add_paragraph(item_text, style='List Bullet')
+                    if level > 0:
+                        p.paragraph_format.left_indent = Cm(level * 0.5)
+                    continue
+
+                # Regular paragraph with simple inline bold parsing (**bold**)
+                parts = re.split(r"(\*\*.*?\*\*)", stripped)
+                p = doc_out.add_paragraph()
+                for part in parts:
+                    if part.startswith('**') and part.endswith('**') and len(part) >= 4: # Inline bold
+                        run = p.add_run(part[2:-2])
+                        run.bold = True
+                    else: # Regular text
+                        p.add_run(part)
+
+            doc_out.save(docx_path_out)
+
+        # Choose docx output path
+        base_name = os.path.splitext(docx_path)[0]
+        docx_output_path = f"{base_name}_humanized.docx"
+        # If user explicitly requested a .docx output path, use that
+        if output_path and output_path.lower().endswith('.docx'):
+            docx_output_path = output_path
+
+        save_text_to_docx(docx_output_path, final_text)
+        print(f"\nOutput DOCX saved to: {docx_output_path}")
+    except Exception as e_docx:
+        print(f"Could not write DOCX output: {e_docx}")
+
+
     print(f"\n{'='*60}")
     print("PROCESSING COMPLETE")
     print(f"{'='*60}")
@@ -610,8 +693,10 @@ def process_docx_file(docx_path, output_path=None, max_words=1200, use_threading
     return final_text
 
 
+
+
 if __name__ == "__main__":
-    docx_file = "your_document.docx"
+    docx_file = r"Manual Introduction.docx"
     
     if os.path.exists(docx_file):
         # Use threading with 4 workers (adjust based on your system)
