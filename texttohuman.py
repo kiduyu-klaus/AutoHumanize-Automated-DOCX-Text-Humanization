@@ -571,24 +571,59 @@ def process_docx_file(docx_path, output_path=None, max_words=1200, use_threading
     
     humanized_chunks = []
     failed_chunks = []
+    base_name = os.path.splitext(docx_path)[0] # Base name without extension
+    chunk_folder = base_name + "_chunks"
     
+    # -------------------------------------------------------------------------
+    # Save a single chunk to a DOCX
+    # -------------------------------------------------------------------------
+    def save_chunk_docx(text, path):
+        doc = Document()
+        for line in text.split("\n"):
+            doc.add_paragraph(line)
+        doc.save(path)
+
     for i, chunk in enumerate(chunks, 1):
         print(f"\n{'='*60}")
         print(f"Processing chunk {i}/{len(chunks)} ({len(chunk.split())} words)")
         print(f"{'='*60}")
         
-        humanized = get_texttohuman_humanizer(chunk)
-        
-        if humanized:
-            humanized_chunks.append(humanized)
-            print(f"✓ Chunk {i} humanized successfully")
-        else:
+        #humanized = get_texttohuman_humanizer(chunk)
+        humanized = None
+        # -------------------------------
+        # 🔁 Retry up to 3 times
+        # -------------------------------
+        for attempt in range(1, 4):
+            print(f" → Attempt {attempt}/3")
+
+            humanized = get_texttohuman_humanizer(chunk)
+
+            if humanized:
+                print(f"✓ Chunk {i} succeeded on attempt {attempt}")
+                break
+
+            print(f"✗ Attempt {attempt} failed")
+
+            # After each fail, wait, then retry
+            if attempt < 3:
+                print("Clearing textarea and retrying in 3 seconds...")
+                
+                time.sleep(3)
+
+        # -------------------------------
+        # If still failed after 3 attempts
+        # -------------------------------
+        if not humanized:
+            print(f"✗ Chunk {i} FAILED after 3 attempts — keeping original text")
             humanized_chunks.append(chunk)
             failed_chunks.append(i)
-            print(f"✗ Chunk {i} failed - keeping original text")
-        
+        else:
+            humanized_docx_path = os.path.join(chunk_folder, f"chunk_{i}_humanized.docx")
+            save_chunk_docx(humanized, humanized_docx_path)
+            humanized_chunks.append(humanized)
+
         if i < len(chunks):
-            print("\nWaiting 5 seconds before next chunk...")
+            print("Waiting 5 seconds before the next chunk...")
             time.sleep(5)
     
     final_text = '\n\n'.join(humanized_chunks)
