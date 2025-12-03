@@ -1,5 +1,7 @@
-streamlit>=1.28.0
-python-docx>=0.8.11
+streamlit
+python-docx
 undetected-chromedriver
 pyperclip
 selenium
+lxml
+Pillow
