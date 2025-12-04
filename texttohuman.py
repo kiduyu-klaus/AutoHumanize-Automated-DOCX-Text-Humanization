@@ -445,6 +445,7 @@ def get_texttohuman_humanizer(humanize_text, timeout=15, processing_timeout=60):
         ]
         
         last_status = ""
+        
         while True:
             elapsed_time = time.time() - start_time
             
@@ -574,6 +575,9 @@ def process_docx_file(docx_path, output_path=None, max_words=1200, use_threading
     base_name = os.path.splitext(docx_path)[0] # Base name without extension
     chunk_folder = base_name + "_chunks"
     
+    if not os.path.exists(chunk_folder):
+        os.makedirs(chunk_folder)
+        print(f"Created folder: {chunk_folder}")
     # -------------------------------------------------------------------------
     # Save a single chunk to a DOCX
     # -------------------------------------------------------------------------
