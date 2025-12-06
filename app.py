@@ -86,6 +86,24 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
     }
     
+    /* Download button styling */
+    .stDownloadButton>button {
+        width: 100%;
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
+        border: none;
+        padding: 0.75rem 2rem;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 1rem;
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    
+    .stDownloadButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+    }
+    
     /* Text area styling */
     .stTextArea textarea {
         border-radius: 8px;
@@ -162,6 +180,40 @@ if 'processing' not in st.session_state:
 if 'driver' not in st.session_state:
     st.session_state.driver = None
 
+def create_docx_from_text(text):
+    """
+    Create a DOCX document from text while preserving formatting.
+    
+    Args:
+        text: str - The text to convert to DOCX
+        
+    Returns:
+        BytesIO: Buffer containing the DOCX file
+    """
+    doc = Document()
+    
+    # Set default font
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Calibri'
+    font.size = Pt(11)
+    
+    # Split text by paragraphs and add them to document
+    paragraphs = text.split('\n')
+    
+    for para_text in paragraphs:
+        if para_text.strip():  # Add non-empty paragraphs
+            doc.add_paragraph(para_text)
+        else:  # Preserve empty lines
+            doc.add_paragraph()
+    
+    # Save to BytesIO buffer
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    
+    return buffer
+
 # Header
 st.markdown("""
     <div class="header-container">
@@ -204,6 +256,7 @@ with st.sidebar:
     - Preserves formatting
     - Smart chunk processing
     - Copy to clipboard
+    - Download as TXT/DOCX
     """)
 
 # Main content area
@@ -250,7 +303,7 @@ with col1:
             if input_text:
                 st.success(f"✅ File loaded successfully! ({len(input_text.split())} words)")
                 with st.expander("Preview uploaded text"):
-                    st.text_area("", value=input_text, height=200, disabled=True)
+                    st.text_area(label="Preview", value=input_text, height=200, disabled=True)
             else:
                 st.error("❌ Failed to read the file. Please check the file format.")
 
@@ -261,15 +314,40 @@ with col2:
         output_container = st.container()
         with output_container:
             st.text_area(
-                "",
+                label="Humanized Text",
                 value=st.session_state.humanized_text,
                 height=400,
                 key="output_text",
                 disabled=True
             )
             
+            # Download buttons row
+            col_download1, col_download2 = st.columns(2)
+            
+            with col_download1:
+                # Download as TXT
+                txt_data = st.session_state.humanized_text.encode('utf-8')
+                st.download_button(
+                    label="💾 Download as TXT",
+                    data=txt_data,
+                    file_name=f"humanized_text_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            
+            with col_download2:
+                # Download as DOCX
+                docx_buffer = create_docx_from_text(st.session_state.humanized_text)
+                st.download_button(
+                    label="📄 Download as DOCX",
+                    data=docx_buffer,
+                    file_name=f"humanized_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+            
             # Copy button
-            if st.button("📋 Copy to Clipboard", key="copy_btn"):
+            if st.button("📋 Copy to Clipboard", key="copy_btn", use_container_width=True):
                 st.code(st.session_state.humanized_text, language=None)
                 st.success("✅ Text copied! Use Ctrl+C / Cmd+C to copy from the box above.")
     else:
@@ -339,11 +417,12 @@ with col_btn2:
                 
             except Exception as e:
                 st.error(f"❌ An error occurred: {str(e)}")
+            
+            finally:
+                # Quit driver after all processing is complete
                 if st.session_state.driver:
                     st.session_state.driver.quit()
                     st.session_state.driver = None
-            
-            finally:
                 st.session_state.processing = False
 
 # Footer

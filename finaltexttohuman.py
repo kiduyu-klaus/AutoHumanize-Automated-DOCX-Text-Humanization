@@ -110,6 +110,7 @@ def get_huminizer_chrome_driver():
     
 
     driver.get(WEBSITE_URL)
+    driver.minimize_window()
     driver.set_page_load_timeout(60)
     return driver
 
@@ -207,8 +208,9 @@ def get_Zero_Human_Alternative(dialog, driver):
                                 print(f"   Found Human alternative: {alternative_score}% - {alternative_text[:50]}...")
                                 
                                 # Check if this is 0% Human alternative
-                                if alternative_score < 10.0: # less than 10% to account for rounding
+                                if alternative_score < 15.0: # less than 10% to account for rounding
                                     print(f"   ✓ Found 0% Human alternative!")
+                                    driver.execute_script("arguments[0].click();", button)
                                     return alternative_text
                         
                     except Exception as e:
@@ -422,9 +424,27 @@ def get_texttohuman_humanizer_final(humanize_text, driver, timeout=15):
         print(f"Error occurred: {e}")
         return None
     
-    finally:
-        driver.quit()
+   
+        
 
 
+if __name__ == "__main__":
+    # Sample text
+    docx_file = r"Manual Introduction.docx"
+    docx_text = read_docx_with_spacing(docx_file)
+    print("=== Basic Word Chunks ===")
+    driver=get_huminizer_chrome_driver()
+    final_humanized_text=""
+    chunks1 = split_text_preserve_paragraphs_and_newlines(docx_text)
+    for i, chunk in enumerate(chunks1, 1):
+        print(f"Chunk {i}: {len(chunk.split())} words")
+        result = get_texttohuman_humanizer_final(chunk,driver)
+        if result:
+            final_humanized_text += result + "\n"
+            print()
+    with open("final_humanized_text.txt", "w", encoding="utf-8") as f:
+        f.write(final_humanized_text)
+    print("Final Humanized Text:\n", final_humanized_text)
+    driver.quit()
 
 
