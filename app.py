@@ -179,13 +179,18 @@ if 'processing' not in st.session_state:
     st.session_state.processing = False
 if 'driver' not in st.session_state:
     st.session_state.driver = None
+if 'output_filename' not in st.session_state:
+    st.session_state.output_filename = ""
+if 'input_filename' not in st.session_state:
+    st.session_state.input_filename = ""
 
-def create_docx_from_text(text):
+def create_docx_from_text(text, preserve_formatting=True):
     """
     Create a DOCX document from text while preserving formatting.
     
     Args:
         text: str - The text to convert to DOCX
+        preserve_formatting: bool - Whether to preserve paragraph structure
         
     Returns:
         BytesIO: Buffer containing the DOCX file
@@ -198,14 +203,18 @@ def create_docx_from_text(text):
     font.name = 'Calibri'
     font.size = Pt(11)
     
-    # Split text by paragraphs and add them to document
-    paragraphs = text.split('\n')
-    
-    for para_text in paragraphs:
-        if para_text.strip():  # Add non-empty paragraphs
-            doc.add_paragraph(para_text)
-        else:  # Preserve empty lines
-            doc.add_paragraph()
+    if preserve_formatting:
+        # Split text by paragraphs and add them to document
+        paragraphs = text.split('\n')
+        
+        for para_text in paragraphs:
+            if para_text.strip():  # Add non-empty paragraphs
+                doc.add_paragraph(para_text)
+            else:  # Preserve empty lines
+                doc.add_paragraph()
+    else:
+        # Add as single paragraph
+        doc.add_paragraph(text)
     
     # Save to BytesIO buffer
     buffer = BytesIO()
@@ -213,6 +222,48 @@ def create_docx_from_text(text):
     buffer.seek(0)
     
     return buffer
+
+def save_docx_to_output(text, filename):
+    """
+    Save humanized text to output folder as DOCX file.
+    
+    Args:
+        text: str - The humanized text
+        filename: str - Base filename (without extension)
+    """
+    try:
+        # Create output directory if it doesn't exist
+        output_dir = "output"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Create DOCX
+        doc = Document()
+        
+        # Set default font
+        style = doc.styles['Normal']
+        font = style.font
+        font.name = 'Calibri'
+        font.size = Pt(11)
+        
+        # Add paragraphs
+        paragraphs = text.split('\n')
+        for para_text in paragraphs:
+            if para_text.strip():
+                doc.add_paragraph(para_text)
+            else:
+                doc.add_paragraph()
+        
+        # Generate output filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_path = os.path.join(output_dir, f"{filename}_{timestamp}.docx")
+        
+        # Save document
+        doc.save(output_path)
+        
+        return output_path
+    except Exception as e:
+        st.error(f"❌ Error saving DOCX: {str(e)}")
+        return None
 
 # Header
 st.markdown("""
@@ -242,6 +293,12 @@ with st.sidebar:
         char_count = len(st.session_state.humanized_text)
         st.metric("Words", word_count)
         st.metric("Characters", char_count)
+        
+        # Show saved file info
+        if st.session_state.output_filename:
+            st.markdown("---")
+            st.markdown("### 💾 Saved File")
+            st.success(f"📄 {os.path.basename(st.session_state.output_filename)}")
     else:
         st.info("Process text to see statistics")
     
@@ -253,6 +310,7 @@ with st.sidebar:
     
     **Features:**
     - Text & DOCX support
+    - Auto-save to DOCX
     - Preserves formatting
     - Smart chunk processing
     - Copy to clipboard
@@ -281,6 +339,7 @@ with col1:
             placeholder="Paste or type your AI-generated text here...",
             key="text_input"
         )
+        st.session_state.input_filename = "manual_input"
     else:
         uploaded_file = st.file_uploader(
             "Upload a DOCX file",
@@ -296,6 +355,9 @@ with col1:
             
             # Read the DOCX file
             input_text = read_docx_with_spacing(tmp_file_path)
+            
+            # Store original filename (without extension)
+            st.session_state.input_filename = os.path.splitext(uploaded_file.name)[0]
             
             # Clean up temp file
             os.unlink(tmp_file_path)
@@ -327,10 +389,11 @@ with col2:
             with col_download1:
                 # Download as TXT
                 txt_data = st.session_state.humanized_text.encode('utf-8')
+                txt_filename = f"{st.session_state.input_filename}_humanized_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
                 st.download_button(
                     label="💾 Download as TXT",
                     data=txt_data,
-                    file_name=f"humanized_text_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    file_name=txt_filename,
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -338,10 +401,11 @@ with col2:
             with col_download2:
                 # Download as DOCX
                 docx_buffer = create_docx_from_text(st.session_state.humanized_text)
+                docx_filename = f"{st.session_state.input_filename}_humanized_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
                 st.download_button(
                     label="📄 Download as DOCX",
                     data=docx_buffer,
-                    file_name=f"humanized_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                    file_name=docx_filename,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True
                 )
@@ -350,6 +414,10 @@ with col2:
             if st.button("📋 Copy to Clipboard", key="copy_btn", use_container_width=True):
                 st.code(st.session_state.humanized_text, language=None)
                 st.success("✅ Text copied! Use Ctrl+C / Cmd+C to copy from the box above.")
+            
+            # Show auto-saved file location
+            if st.session_state.output_filename:
+                st.info(f"💾 Auto-saved to: {st.session_state.output_filename}")
     else:
         st.info("👈 Enter text or upload a document and click 'Humanize Text' to see results here.")
 
@@ -364,6 +432,7 @@ with col_btn2:
         else:
             st.session_state.processing = True
             st.session_state.humanized_text = ""
+            st.session_state.output_filename = ""
             
             # Progress tracking
             progress_bar = st.progress(0)
@@ -377,7 +446,7 @@ with col_btn2:
                 st.session_state.driver = driver
                 
                 # Split text into chunks
-                status_text.text("📄 Processing text chunks...")
+                status_text.text("🔄 Processing text chunks...")
                 progress_bar.progress(20)
                 chunks = split_text_preserve_paragraphs_and_newlines(input_text, chunk_size)
                 
@@ -388,7 +457,7 @@ with col_btn2:
                 
                 for i, chunk in enumerate(chunks):
                     status_text.text(f"🔄 Humanizing chunk {i+1}/{total_chunks}...")
-                    progress = 20 + (70 * (i / total_chunks))
+                    progress = 20 + (60 * (i / total_chunks))
                     progress_bar.progress(int(progress))
                     
                     # Humanize chunk
@@ -405,12 +474,30 @@ with col_btn2:
                 
                 # Combine results
                 status_text.text("✅ Finalizing...")
-                progress_bar.progress(90)
+                progress_bar.progress(85)
                 
                 st.session_state.humanized_text = "\n\n".join(humanized_chunks)
                 
+                # Auto-save to DOCX in output folder
+                status_text.text("💾 Saving to DOCX...")
+                progress_bar.progress(95)
+                
+                base_filename = f"{st.session_state.input_filename}_humanized"
+                output_path = save_docx_to_output(
+                    st.session_state.humanized_text,
+                    base_filename
+                )
+                
+                if output_path:
+                    st.session_state.output_filename = output_path
+                
                 progress_bar.progress(100)
                 status_text.text("✅ Complete!")
+                
+                # Show success message
+                st.success(f"🎉 Text humanized successfully!")
+                if output_path:
+                    st.success(f"💾 Saved to: {output_path}")
                 
                 time.sleep(1)
                 st.rerun()

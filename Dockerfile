@@ -49,7 +49,7 @@ RUN wget -q -O /tmp/google-chrome-key.pub https://dl-ssl.google.com/linux/linux_
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/* /tmp/google-chrome-key.pub
 
-# Copy requirements first for better caching
+# Copy requirements file
 COPY requirements.txt .
 
 # Install Python dependencies
@@ -58,21 +58,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY app.py .
 COPY finaltexttohuman.py .
-COPY texttohuman.py .
-COPY text_humanizer_app.py .
 
-# Create directories for outputs
-RUN mkdir -p /app/outputs /app/uploads
+    # Create output directory
+RUN mkdir -p /app/output
+
+# Set proper permissions for output directory
+RUN chmod 777 /app/output
 
 # Expose Streamlit port
 EXPOSE 8501
 
-# Health check
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# Set display for headless browser
+ENV DISPLAY=:99
 
-# Start Xvfb and run Streamlit
-CMD ["streamlit", "run", "app.py", \
-     "--server.port=8502", \
-     "--server.address=0.0.0.0", \
-     "--server.headless=true", \
-     "--browser.gatherUsageStats=false"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+# Run the application
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
