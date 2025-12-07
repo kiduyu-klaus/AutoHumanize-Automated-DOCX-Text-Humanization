@@ -268,7 +268,7 @@ def save_docx_to_output(text, filename):
 # Header
 st.markdown("""
     <div class="header-container">
-        <h1 class="header-title">✨ AI Text Humanizer</h1>
+        <h1 class="header-title">✨ autohumanize-app : AI Text Humanizer</h1>
         <p class="header-subtitle">Transform AI-generated text into natural, human-like content</p>
     </div>
 """, unsafe_allow_html=True)
