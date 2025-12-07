@@ -1,7 +1,5 @@
-streamlit
-python-docx
-undetected-chromedriver
-pyperclip
-selenium
-lxml
-Pillow
+streamlit==1.31.0
+selenium==4.16.0
+python-docx==1.1.0
+pyperclip==1.8.2
+webdriver-manager==4.0.1

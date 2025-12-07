@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y \
     libvulkan1 \
     xvfb \
     curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome
@@ -48,6 +49,22 @@ RUN wget -q -O /tmp/google-chrome-key.pub https://dl-ssl.google.com/linux/linux_
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/* /tmp/google-chrome-key.pub
+
+# Install ChromeDriver using the new Chrome for Testing endpoints
+RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+') && \
+    echo "Chrome version: ${CHROME_VERSION}" && \
+    CHROME_MAJOR_VERSION=$(echo $CHROME_VERSION | cut -d. -f1) && \
+    echo "Chrome major version: ${CHROME_MAJOR_VERSION}" && \
+    # Download the latest ChromeDriver for the Chrome major version
+    CHROMEDRIVER_URL="https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_MAJOR_VERSION}" && \
+    CHROMEDRIVER_VERSION=$(curl -s ${CHROMEDRIVER_URL}) && \
+    echo "ChromeDriver version: ${CHROMEDRIVER_VERSION}" && \
+    wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip && \
+    unzip /tmp/chromedriver.zip -d /tmp/ && \
+    mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64 && \
+    chromedriver --version
 
 # Copy requirements file
 COPY requirements.txt .
@@ -59,7 +76,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY finaltexttohuman.py .
 
-    # Create output directory
+# Create output directory
 RUN mkdir -p /app/output
 
 # Set proper permissions for output directory
@@ -79,5 +96,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 CMD ["streamlit", "run", "app.py", \
      "--server.port=8501", \
      "--server.address=0.0.0.0", \
-     "--browser.serverAddress=localhost", \
      "--browser.gatherUsageStats=false"]
