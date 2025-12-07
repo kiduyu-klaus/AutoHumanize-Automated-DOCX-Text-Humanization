@@ -389,15 +389,11 @@ def get_texttohuman_humanizer_final(humanize_text, page, timeout=30000, save_deb
             'button.inline-flex:not([disabled])',
         ]
         
-        for selector in button_selectors:
-            try:
-                btn = page.locator(selector).first
-                if btn.is_visible(timeout=5000) and btn.is_enabled():
-                    humanize_button = btn
-                    print(f"Found button with selector: {selector}")
-                    break
-            except:
-                continue
+        humanize_button = page.get_by_role("button", name="Humanize Now")
+        print("Found:", humanize_button.count())
+        print("Visible:", humanize_button.is_visible())
+        print("Enabled:", humanize_button.is_enabled())
+
         
         if humanize_button is None:
             # Debug: Print all buttons on page
@@ -406,6 +402,8 @@ def get_texttohuman_humanizer_final(humanize_text, page, timeout=30000, save_deb
             for idx, btn in enumerate(all_buttons[:10]):  # Show first 10 buttons
                 try:
                     btn_text = btn.inner_text()
+                    if btn_text.strip() == "Humanize Now":
+                        humanize_button = btn
                     btn_disabled = btn.get_attribute('disabled')
                     print(f"  Button {idx}: '{btn_text}' (disabled={btn_disabled})")
                 except:
@@ -456,6 +454,7 @@ def get_texttohuman_humanizer_final(humanize_text, page, timeout=30000, save_deb
         # Get output text
         output_element = page.locator('div.p-4.overflow-y-auto.rounded-lg.h-full.text-foreground.bg-background').first
         output_element.wait_for(state='visible', timeout=timeout)
+        
         
         humanized_text = output_element.inner_text()
         print(humanized_text)
@@ -511,18 +510,31 @@ def get_texttohuman_humanizer_final(humanize_text, page, timeout=30000, save_deb
                             print("   ✗ No 0% Human alternative found after all retries")
                         
                         # Close dialog
-                        try:
-                            close_button = dialog.locator('button[data-slot="dialog-close"]').first
-                            close_button.click()
-                            time.sleep(1)
-                        except Exception as e:
-                            print(f"   ⚠ Failed to close dialog: {e}")
+                        # try:
+                        #     if dialog.is_visible():
+                        #         close_button = dialog.locator('button[data-slot="dialog-close"]').first
+                        #         close_button.click()
+                        #         time.sleep(1)
+                        # except Exception as e:
+                        #     print(f"   ⚠ Failed to close dialog: {e}")
                             
                     except Exception as e:
                         print(f"   ✗ Failed to process mark: {e}")
                         continue
         
+         # Get output text
+        
+        
+        output_element1 = page.locator('div.p-4.overflow-y-auto.rounded-lg.h-full.text-foreground.bg-background').first
+        output_element1.wait_for(state='visible', timeout=timeout)
+        
+        humanized_text_final = output_element1.inner_text()
+        thread_safe_print("Final Output element is visible, retrieving text...")
+        thread_safe_print("" + humanized_text_final)
         # Save to file
+        with open("humanized_text_final.txt", "w", encoding="utf-8") as f:
+            f.write(humanized_text_final)
+            
         with open("humanized_text.txt", "w", encoding="utf-8") as f:
             f.write(humanize_text1)
         
