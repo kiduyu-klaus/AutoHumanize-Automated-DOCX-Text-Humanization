@@ -1,6 +1,6 @@
 import streamlit as st
 import time
-from finaltexttohuman import (
+from texttohuman import (
     get_huminizer_chrome_driver,
     get_texttohuman_humanizer_final,
     read_docx_with_spacing,

@@ -1,34 +1,23 @@
-import random
-import pyperclip
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import time
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+import random
 from docx import Document
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from docx.shared import Cm
+from typing import Optional, Tuple, List
+import pyperclip
 
 LIST_OF_USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 5.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.133 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.133 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ]
 
 WEBSITE_URL = "https://texttohuman.com"
-
 # Thread-safe print lock
 print_lock = Lock()
 
@@ -37,413 +26,395 @@ def thread_safe_print(*args, **kwargs):
     with print_lock:
         print(*args, **kwargs)
 
-
 def get_random_user_agent():
     return random.choice(LIST_OF_USER_AGENTS)
 
-
-def process_paragraph(paragraph):
+def read_docx_with_spacing(file_path):
     """
-    Process a single paragraph with formatting.
-    This function is designed to be called in parallel.
+    Read a DOCX file and return text while maintaining spacing and formatting.
     
     Args:
-        paragraph: A paragraph object from python-docx
+        file_path: str - Path to the DOCX file
         
     Returns:
-        Tuple of (formatted_text, list_info) or None if paragraph should be skipped
+        str: The extracted text with preserved spacing and line breaks
     """
-    text = paragraph.text.strip()
-    
-    # Skip empty paragraphs
-    if not text:
-        return None
-    
-    # Skip placeholder text in brackets
-    if text.startswith('[') and text.endswith(']'):
-        return None
-    
-    style_name = paragraph.style.name
-    list_info = None
-    
-    # Handle headings by style
-    if style_name.startswith('Heading'):
-        try:
-            level = int(style_name.split()[-1])
-            return (f"\n{'#' * (level + 1)} {text}\n", None)
-        except (ValueError, IndexError):
-            return (f"\n## {text}\n", None)
-    
-    # Handle numbered lists
-    elif style_name.startswith('List Number') or paragraph._element.xpath('.//w:numPr'):
-        try:
-            num_pr = paragraph._element.xpath('.//w:numPr')[0]
-            ilvl = num_pr.xpath('.//w:ilvl')[0].get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-            level = int(ilvl) if ilvl else 0
-        except (IndexError, ValueError):
-            level = 0
+    try:
+        # Load the document
+        doc = Document(file_path)
         
-        list_info = ('numbered', level)
-        return (text, list_info)
-    
-    # Handle bulleted lists
-    elif style_name.startswith('List Bullet'):
-        try:
-            num_pr = paragraph._element.xpath('.//w:numPr')[0]
-            ilvl = num_pr.xpath('.//w:ilvl')[0].get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-            level = int(ilvl) if ilvl else 0
-        except (IndexError, ValueError):
-            level = 0
+        # List to store all text elements
+        text_elements = []
         
-        indent = '  ' * level
-        return (f"{indent}• {text}", None)
-    
-    # Handle bold text (potential heading)
-    elif any(run.bold for run in paragraph.runs if run.text.strip()):
-        bold_chars = sum(len(run.text) for run in paragraph.runs if run.bold)
-        total_chars = len(text)
-        
-        if bold_chars > total_chars * 0.8:
-            return (f"\n## {text}\n", None)
-        else:
-            formatted_para = ""
-            for run in paragraph.runs:
-                if run.bold and run.text.strip():
-                    formatted_para += f"**{run.text}**"
-                else:
-                    formatted_para += run.text
-            return (formatted_para, None)
-    
-    # Regular paragraph
-    else:
-        return (text, None)
-
-
-def read_docx_with_formatting(file_path, use_threading=True, max_workers=4):
-    """
-    Read a DOCX file and preserve formatting including:
-    - Bold text as headings (with proper markdown)
-    - Numbered lists
-    - Regular paragraphs
-    - Ignores placeholder text in [brackets]
-    
-    Args:
-        file_path: Path to the DOCX file
-        use_threading: Whether to use threading for processing (default: True)
-        max_workers: Maximum number of worker threads (default: 4)
-        
-    Returns:
-        String containing formatted text with preserved structure
-    """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-    
-    doc = Document(file_path)
-    formatted_text = []
-    list_counter = {}
-    
-    if use_threading and len(doc.paragraphs) > 10:
-        thread_safe_print(f"Using threaded processing with {max_workers} workers...")
-        
-        # Process paragraphs in parallel
-        results = [None] * len(doc.paragraphs)
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all paragraphs for processing
-            future_to_index = {
-                executor.submit(process_paragraph, para): i 
-                for i, para in enumerate(doc.paragraphs)
-            }
-            
-            # Collect results in order
-            for future in as_completed(future_to_index):
-                index = future_to_index[future]
-                try:
-                    result = future.result()
-                    results[index] = result
-                except Exception as e:
-                    thread_safe_print(f"Error processing paragraph {index}: {e}")
-                    results[index] = None
-        
-        # Post-process results to handle numbered lists
-        for result in results:
-            if result is None:
-                continue
-            
-            text, list_info = result
-            
-            if list_info:
-                list_type, level = list_info
-                
-                if list_type == 'numbered':
-                    if level not in list_counter:
-                        list_counter[level] = 1
-                    else:
-                        list_counter[level] += 1
-                    
-                    indent = '  ' * level
-                    formatted_text.append(f"{indent}{list_counter[level]}. {text}")
-            else:
-                formatted_text.append(text)
-                if not text.startswith('\n'):  # Reset list counter for non-list items
-                    list_counter = {}
-    
-    else:
-        # Sequential processing (original method)
+        # Iterate through all paragraphs
         for paragraph in doc.paragraphs:
-            result = process_paragraph(paragraph)
+            # Get the paragraph text
+            para_text = paragraph.text
             
-            if result is None:
-                continue
-            
-            text, list_info = result
-            
-            if list_info:
-                list_type, level = list_info
-                
-                if list_type == 'numbered':
-                    if level not in list_counter:
-                        list_counter[level] = 1
-                    else:
-                        list_counter[level] += 1
-                    
-                    indent = '  ' * level
-                    formatted_text.append(f"{indent}{list_counter[level]}. {text}")
+            # Preserve empty lines (paragraphs with no text)
+            if not para_text.strip():
+                text_elements.append('')
             else:
-                formatted_text.append(text)
-                if not text.startswith('\n'):
-                    list_counter = {}
+                text_elements.append(para_text)
+        
+        # Join all elements with newlines to maintain structure
+        full_text = '\n'.join(text_elements)
+        
+        return full_text
+        
+    except ImportError:
+        print("Error: python-docx library not installed. Install it using: pip install python-docx")
+        return None
+    except FileNotFoundError:
+        print(f"Error: File not found at path: {file_path}")
+        return None
+    except Exception as e:
+        print(f"Error reading DOCX file: {e}")
+        return None
+
+class PlaywrightHumanizer:
+    """Context manager for Playwright browser instance"""
     
-    return '\n'.join(formatted_text)
+    def __init__(self, headless=True, debug=False):
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.headless = headless
+        self.debug = debug
+    
+    def __enter__(self):
+        try:
+            self.playwright = sync_playwright().start()
+            
+            # Launch browser with options
+            self.browser = self.playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    '--no-sandbox',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage'
+                ]
+            )
+        except Exception as e:
+            if "Executable doesn't exist" in str(e):
+                print("\n" + "="*70)
+                print("ERROR: Playwright browsers are not installed!")
+                print("="*70)
+                print("\nPlease run the following command to install browsers:")
+                print("\n    playwright install chromium")
+                print("\nOr install all browsers with:")
+                print("\n    playwright install")
+                print("\n" + "="*70 + "\n")
+                raise SystemExit(1)
+            else:
+                raise
+        
+        # Create context with custom user agent and permissions
+        self.context = self.browser.new_context(
+            user_agent=get_random_user_agent(),
+            viewport={'width': 1920, 'height': 1080},
+            permissions=['clipboard-read', 'clipboard-write']
+        )
+        
+        # Enable debug mode if requested
+        if self.debug:
+            self.context.set_default_timeout(120000)  # 2 minutes for debug
+        
+        # Create page
+        self.page = self.context.new_page()
+        self.page.set_default_timeout(60000)  # 60 seconds
+        
+        # Navigate to website
+        print(f"Navigating to {WEBSITE_URL}...")
+        self.page.goto(WEBSITE_URL, wait_until='networkidle')
+        print("Page loaded successfully!")
+        
+        # Take screenshot if debug mode
+        if self.debug:
+            self.page.screenshot(path="debug_page_loaded.png")
+            print("Screenshot saved: debug_page_loaded.png")
+        
+        return self.page
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.page:
+            self.page.close()
+        if self.context:
+            self.context.close()
+        if self.browser:
+            self.browser.close()
+        if self.playwright:
+            self.playwright.stop()
 
-
-def read_docx(file_path, use_threading=True, max_workers=4):
+def get_huminizer_chrome_driver():
     """
-    Read a DOCX file with formatting preservation.
+    Create and return a Playwright page instance.
+    Note: Use context manager PlaywrightHumanizer instead for proper resource management.
+    """
+    playwright = sync_playwright().start()
+    browser = playwright.chromium.launch(
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage'
+        ]
+    )
+    
+    context = browser.new_context(
+        user_agent=get_random_user_agent(),
+        viewport={'width': 1920, 'height': 1080},
+        permissions=['clipboard-read', 'clipboard-write']
+    )
+    
+    page = context.new_page()
+    page.set_default_timeout(60000)
+    page.goto(WEBSITE_URL, wait_until='networkidle')
+    
+    # Store references for cleanup
+    page._playwright = playwright
+    page._browser = browser
+    page._context = context
+    
+    return page
+
+def split_text_preserve_paragraphs_and_newlines(text, chunk_size=2000):
+    """
+    Split text into chunks while preserving paragraph boundaries and all newlines.
     
     Args:
-        file_path: Path to the DOCX file
-        use_threading: Whether to use threading for processing (default: True)
-        max_workers: Maximum number of worker threads (default: 4)
+        text: str - The text to split
+        chunk_size: int - Target number of words per chunk (default: 2000)
         
     Returns:
-        String containing all text from the document with preserved formatting
+        list: List of text chunks with preserved formatting
     """
-    return read_docx_with_formatting(file_path, use_threading, max_workers)
-
-
-def split_text_by_words(text, max_words=1200):
-    """
-    Split text into chunks of maximum word count.
+    lines = text.split('\n')
     
-    Args:
-        text: The text to split
-        max_words: Maximum number of words per chunk (default: 1200)
-        
-    Returns:
-        List of text chunks
-    """
-    words = text.split()
     chunks = []
     current_chunk = []
-    current_count = 0
+    current_word_count = 0
     
-    for word in words:
-        current_chunk.append(word)
-        current_count += 1
+    for i, line in enumerate(lines):
+        line_words = line.split()
+        line_word_count = len(line_words)
         
-        if current_count >= max_words:
-            chunks.append(' '.join(current_chunk))
-            current_chunk = []
-            current_count = 0
+        if current_word_count + line_word_count > chunk_size and current_chunk:
+            chunks.append('\n'.join(current_chunk))
+            current_chunk = [line]
+            current_word_count = line_word_count
+        else:
+            current_chunk.append(line)
+            current_word_count += line_word_count
     
     if current_chunk:
-        chunks.append(' '.join(current_chunk))
+        chunks.append('\n'.join(current_chunk))
     
     return chunks
 
-
-def get_texttohuman_humanizer(humanize_text, timeout=15, processing_timeout=60):
+def get_Zero_Human_Alternative(dialog, page):
     """
-    Humanize text using TextToHuman website.
+    Get the alternative button with "Human" type and 0% score.
+    Retries up to 6 times by clicking reload if not found.
     
     Args:
-        humanize_text: Text to humanize
-        timeout: Timeout for element loading (seconds)
-        processing_timeout: Timeout for text processing (seconds)
+        dialog: Locator - The dialog containing alternatives
+        page: Page - Playwright page instance
         
     Returns:
-        Humanized text or None if failed
+        str: The text of the best alternative, or None if not found
     """
-    options = uc.ChromeOptions()
-    custom_user_agent = get_random_user_agent()
-    options.add_argument(f"--user-agent={custom_user_agent}")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    driver = uc.Chrome(options=options)
-
-    try:
-        thread_safe_print("Loading website...")
-        driver.get(WEBSITE_URL)
-        time.sleep(3)
-
-        thread_safe_print("Scrolling down 25%...")
-        driver.execute_script("window.scrollTo(0, Math.floor(document.documentElement.scrollHeight * 0.25));")
-        time.sleep(1)
+    max_retries = 6
+    
+    for attempt in range(max_retries):
+        print(f"   Attempt {attempt + 1}/{max_retries} to find 0% Human alternative...")
         
-        textarea_selectors = [
-            'textarea[data-slot="textarea"]',
-            'textarea[placeholder*="Paste your AI-generated"]',
-            'textarea.resize-none',
-            'textarea'
-        ]
-        
-        textarea_box = None
-        for selector in textarea_selectors:
-            try:
-                textarea_box = WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                )
-                thread_safe_print(f"Found textarea with selector: {selector}")
-                break
-            except TimeoutException:
-                continue
-        
-        if not textarea_box:
-            raise Exception("Could not find textarea element")
-
-        thread_safe_print("Entering text...")
         try:
-            pyperclip.copy(humanize_text)
-            textarea_box.click()
-            textarea_box.send_keys(Keys.CONTROL, 'v')
-            thread_safe_print(f"✓ Text inserted ({len(humanize_text)} characters)")
-        except Exception as e:
-            try:
-                thread_safe_print("Attempting to set text via JavaScript...")
-                textarea_box.click()
-                
-                driver.execute_script("""
-                    arguments[0].value = arguments[1];
-                    var event = new Event('input', { bubbles: true });
-                    arguments[0].dispatchEvent(event);
-                    var changeEvent = new Event('change', { bubbles: true });
-                    arguments[0].dispatchEvent(changeEvent);
-                """, textarea_box, humanize_text)
-                thread_safe_print("Text set via JavaScript")
-                
-                current_value = driver.execute_script("return arguments[0].value", textarea_box)
-                if len(current_value) == len(humanize_text):
-                    thread_safe_print("Text successfully set via JavaScript")
-                else:
-                    raise Exception("JavaScript set didn't work completely")
+            # Get alternatives container
+            alternatives_container = dialog.locator('div.space-y-2').first
+            alternatives_container.wait_for(state='visible', timeout=30000)
+            
+            alternative_buttons = alternatives_container.locator('button').all()
+            
+            if not alternative_buttons:
+                print(f"   ✗ No alternative buttons found on attempt {attempt + 1}")
+            else:
+                # Process each button to find 0% Human alternative
+                for button in alternative_buttons:
+                    try:
+                        spans_container = button.locator('div.flex.items-center.gap-2.text-xs').first
+                        spans = spans_container.locator('span').all()
+                        
+                        if len(spans) >= 2:
+                            alternative_type = spans[0].inner_text()
+                            alternative_score_text = spans[1].inner_text()
+                            
+                            if alternative_type == "Human":
+                                try:
+                                    alternative_score = float(alternative_score_text.replace('%', ''))
+                                except ValueError:
+                                    print(f"   ⚠ Could not parse score: {alternative_score_text}")
+                                    continue
+                                
+                                alternative_text_elem = button.locator('p.text-sm.text-foreground.flex-1').first
+                                alternative_text = alternative_text_elem.inner_text()
+                                
+                                print(f"   Found Human alternative: {alternative_score}% - {alternative_text[:50]}...")
+                                
+                                if alternative_score < 15.0:
+                                    print(f"   ✓ Found 0% Human alternative!")
+                                    button.click()
+                                    return alternative_text
+                        
+                    except Exception as e:
+                        print(f"   ⚠ Error processing button: {e}")
+                        continue
+            
+            # If not found and not the last attempt, try reloading
+            if attempt < max_retries - 1:
+                print(f"   ⚠ 0% Human alternative not found, attempting reload...")
+                try:
+                    reload_container = dialog.locator('div.flex.justify-end').first
+                    reload_button = reload_container.locator('button').first
                     
-            except Exception as js_error:
-                thread_safe_print(f"JavaScript method failed, falling back to chunked send_keys: {js_error}")
-                
-                CHUNK_SIZE = 1000
-                chunks = [humanize_text[i:i+CHUNK_SIZE] for i in range(0, len(humanize_text), CHUNK_SIZE)]
-                
-                textarea_box.clear()
-                for i, chunk in enumerate(chunks):
-                    textarea_box.send_keys(chunk)
-                    if i % 5 == 0:
-                        time.sleep(0.1)
-                
-                thread_safe_print("Text entered using chunked send_keys")
+                    reload_button.click()
+                    print(f"   ✓ Clicked reload button, waiting...")
+                    time.sleep(2)
+                    
+                    # Wait for alternatives to reload
+                    dialog.locator('div.space-y-2').first.wait_for(state='visible', timeout=30000)
+                    
+                except Exception as e:
+                    print(f"   ✗ Failed to reload alternatives: {e}")
+                    break
+            else:
+                print(f"   ✗ Max retries reached, no 0% Human alternative found")
+        
+        except Exception as e:
+            print(f"   ✗ Error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            continue
+    
+    return None
 
-            final_text = textarea_box.get_attribute('value')
-            orig_len = len(humanize_text) if humanize_text is not None else 0
-            final_len = len(final_text) if final_text is not None else 0
-            thread_safe_print(f"Text length verification: Original: {orig_len}, Final: {final_len}")
-                
+def get_texttohuman_humanizer_final(humanize_text, page, timeout=30000, save_debug=False):
+    """
+    Humanize text using Playwright
+    
+    Args:
+        humanize_text: str - Text to humanize
+        page: Page - Playwright page instance
+        timeout: int - Timeout in milliseconds
+        save_debug: bool - Save debug screenshots on error
+    """
+    processing_timeout = 60
+    
+    try:
+        print(f"Processing text with {len(humanize_text)} characters...")
+        
+        # Wait for page to be fully loaded
+        page.wait_for_load_state('networkidle', timeout=timeout)
         time.sleep(2)
         
-        button_selectors = [
-            'button[data-slot="button"]:not([disabled])',
-            'button:has-text("Humanize Now")',
-            'button:contains("Humanize")',
-            'div.flex.flex-col.gap-2.items-end button'
-        ]
+        # Wait for textarea and clear it
+        print("Locating textarea...")
+        textarea = page.locator('textarea[data-slot="textarea"]').first
+        textarea.wait_for(state='visible', timeout=timeout)
+        
+        # Clear and focus textarea
+        textarea.click()
+        textarea.fill('')
+        time.sleep(1)
+        
+        # Scroll textarea into view
+        textarea.scroll_into_view_if_needed()
+        
+        # Try multiple methods to input text
+        print("Attempting to paste text...")
+        
+        # Method 1: Try using clipboard paste button
+        try:
+            pyperclip.copy(humanize_text)
+            paste_button = page.locator('button.bg-primary\\/10').first
+            
+            if paste_button.is_visible(timeout=5000):
+                print("Found paste button, clicking...")
+                paste_button.click()
+                time.sleep(2)
+            else:
+                raise Exception("Paste button not visible")
+        except Exception as e:
+            print(f"Paste button method failed: {e}")
+            print("Trying direct input method...")
+            
+            # Method 2: Direct fill
+            textarea.fill(humanize_text)
+            time.sleep(1)
+            
+            # Method 3: Type with keyboard simulation (fallback)
+            if not textarea.input_value():
+                print("Direct fill failed, trying keyboard input...")
+                textarea.click()
+                page.keyboard.insert_text(humanize_text)
+                time.sleep(1)
+        
+        # Verify text was entered
+        current_value = textarea.input_value()
+        print(f"Textarea now has {len(current_value)} characters")
+        
+        if len(current_value) < 10:
+            if save_debug:
+                page.screenshot(path="debug_text_input_failed.png")
+            raise Exception("Failed to enter text into textarea")
+        
+        # Wait for and click humanize button - try multiple selectors
+        print("Looking for Humanize button...")
         
         humanize_button = None
+        button_selectors = [
+            'button[data-slot="button"]:not([disabled])',
+            'button:has-text("Humanize")',
+            'button:has-text("Humanize Now")',
+            'button.inline-flex:not([disabled])',
+        ]
+        
         for selector in button_selectors:
             try:
-                humanize_button = WebDriverWait(driver, timeout).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                )
-                thread_safe_print(f"Found button with selector: {selector}")
-                break
+                btn = page.locator(selector).first
+                if btn.is_visible(timeout=5000) and btn.is_enabled():
+                    humanize_button = btn
+                    print(f"Found button with selector: {selector}")
+                    break
             except:
                 continue
         
-        if not humanize_button:
-            thread_safe_print("Trying to find button by text...")
-            buttons = driver.find_elements(By.TAG_NAME, 'button')
-            for btn in buttons:
-                if 'Humanize' in btn.text:
-                    humanize_button = btn
-                    break
-        
-        if not humanize_button:
-            raise Exception("Could not find Humanize button")
-        
-        thread_safe_print("Checking button state...")
-        disabled_attr = humanize_button.get_attribute('disabled')
-        
-        if disabled_attr is not None:
-            thread_safe_print("Button is disabled, waiting for it to be enabled...")
-            wait_start = time.time()
-            max_button_wait = 30
+        if humanize_button is None:
+            # Debug: Print all buttons on page
+            print("Could not find humanize button. Available buttons:")
+            all_buttons = page.locator('button').all()
+            for idx, btn in enumerate(all_buttons[:10]):  # Show first 10 buttons
+                try:
+                    btn_text = btn.inner_text()
+                    btn_disabled = btn.get_attribute('disabled')
+                    print(f"  Button {idx}: '{btn_text}' (disabled={btn_disabled})")
+                except:
+                    pass
             
-            while time.time() - wait_start < max_button_wait:
-                disabled_attr = humanize_button.get_attribute('disabled')
-                if disabled_attr is None:
-                    thread_safe_print("✓ Button enabled!")
-                    break
-                time.sleep(0.5)
-            else:
-                raise Exception("Button remained disabled after 30 seconds")
+            if save_debug:
+                page.screenshot(path="debug_button_not_found.png")
+            
+            raise Exception("Could not locate Humanize button")
         
-        time.sleep(1)
+        # Click the humanize button
+        print("Clicking Humanize button...")
+        humanize_button.click()
         
-        thread_safe_print("Clicking Humanize Now button...")
-        try:
-            humanize_button.click()
-        except Exception as e:
-            thread_safe_print(f"Regular click failed: {e}")
-            try:
-                thread_safe_print("Trying JavaScript click...")
-                driver.execute_script("arguments[0].click();", humanize_button)
-            except Exception as e2:
-                thread_safe_print(f"JavaScript click failed: {e2}")
-                thread_safe_print("Trying scroll and click...")
-                driver.execute_script("arguments[0].scrollIntoView(true);", humanize_button)
-                time.sleep(0.5)
-                driver.execute_script("arguments[0].click();", humanize_button)
-        
-        try:
-            thread_safe_print("Waiting for processing to start...")
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '.animate-spin'))
-            )
-            thread_safe_print("Processing started...")
-        except TimeoutException:
-            thread_safe_print("Loading spinner not detected, continuing...")
-        
-        thread_safe_print("Waiting for results (this may take up to 3 minutes)...")
-        output_container = None
+        # Monitor processing status
         start_time = time.time()
         max_wait_time = processing_timeout
         check_interval = 2
-        
-        output_selectors = [
-            'div.overflow-y-auto.rounded-lg',
-            'div[class*="overflow-y-auto"]',
-            'div.p-4 div.w-full',
-            'mark[data-chunk-type]'
-        ]
-        
         last_status = ""
         
         while True:
@@ -454,302 +425,151 @@ def get_texttohuman_humanizer(humanize_text, timeout=15, processing_timeout=60):
                 break
             
             try:
-                status_div = driver.find_element(By.CSS_SELECTOR, 'div.flex.items-center.gap-4.text-xs.text-primary')
-                status_text = status_div.text.strip()
-                
-                if status_text and status_text != last_status:
-                    thread_safe_print(f"⚡ Autopilot: {status_text} ({int(elapsed_time)}s elapsed)")
-                    last_status = status_text
+                status_div = page.locator('div.flex.items-center.gap-4.text-xs.text-primary').first
+                if status_div.is_visible():
+                    status_text = status_div.inner_text().strip()
                     
-            except (NoSuchElementException, Exception):
-                try:
-                    spinner = driver.find_element(By.CSS_SELECTOR, '.animate-spin')
-                    if spinner.is_displayed():
-                        if int(elapsed_time) % 10 == 0 and int(elapsed_time) > 0:
-                            thread_safe_print(f"Processing... ({int(elapsed_time)}s elapsed)")
-                except (NoSuchElementException, Exception):
-                    pass
+                    if status_text and status_text != last_status:
+                        thread_safe_print(f"⚡ Autopilot: {status_text} ({int(elapsed_time)}s elapsed)")
+                        last_status = status_text
+            except:
+                pass
             
-            found_output = False
-            for selector in output_selectors:
-                try:
-                    output_container = driver.find_element(By.CSS_SELECTOR, selector)
-                    
-                    if output_container and len(output_container.text.strip()) > 0:
-                        thread_safe_print(f"✓ Found output with selector: {selector}")
-                        thread_safe_print(f"✓ Results loaded after {elapsed_time:.1f} seconds")
-                        found_output = True
-                        break
-                    else:
-                        output_container = None
-                except NoSuchElementException:
-                    continue
-            
-            if found_output and output_container:
-                break
+            try:
+                output_element = page.locator('div.p-4.overflow-y-auto.rounded-lg.h-full.text-foreground.bg-background').first
+                if output_element.is_visible() and output_element.inner_text().strip():
+                    break
+            except:
+                pass
             
             time.sleep(check_interval)
         
-        if not output_container:
-            thread_safe_print("Output container not found, checking page content...")
-            time.sleep(3)
-            
-            try:
-                page_text = driver.find_element(By.TAG_NAME, 'body').text
+        # Get output text
+        output_element = page.locator('div.p-4.overflow-y-auto.rounded-lg.h-full.text-foreground.bg-background').first
+        output_element.wait_for(state='visible', timeout=timeout)
+        
+        humanized_text = output_element.inner_text()
+        print(humanized_text)
+        humanize_text1 = humanized_text
+        
+        # Process marks (highlighted sections)
+        marks = output_element.locator('mark').all()
+        
+        if marks:
+            for i, mark in enumerate(marks):
+                mark_class = mark.get_attribute('class') or ""
                 
-                if 'Humanizing your text' in page_text:
-                    raise Exception(f"Still processing after {max_wait_time} seconds timeout")
-                
-                marks = driver.find_elements(By.TAG_NAME, 'mark')
-                if marks:
-                    humanized_text = ' '.join([mark.text for mark in marks if mark.text.strip()])
-                    if humanized_text:
-                        thread_safe_print("✓ Found results in mark tags")
-                        return humanized_text
-                
-                raise Exception("Could not find results in page")
-            except Exception as e:
-                raise Exception(f"Failed to retrieve results: {str(e)}")
-        
-        thread_safe_print("Results loaded successfully!")
-        
-        thread_safe_print("\nAnalyzing results...")
-        marks = output_container.find_elements(By.TAG_NAME, 'mark')
-        
-        humanized_text = output_container.text
-        if not humanized_text or len(humanized_text) < 10:
-            marks = output_container.find_elements(By.TAG_NAME, 'mark')
-            if marks:
-                humanized_text = ' '.join([mark.text for mark in marks if mark.text.strip()])
-        
-        return humanized_text
-
-    except Exception as e:
-        thread_safe_print(f"Error occurred: {e}")
-        try:
-            driver.save_screenshot("error_screenshot.png")
-            thread_safe_print("Screenshot saved as error_screenshot.png")
-            thread_safe_print(f"Current URL: {driver.current_url}")
-            thread_safe_print(f"Page title: {driver.title}")
-        except:
-            pass
-        return None
-    
-    finally:
-        driver.quit()
-
-
-def process_docx_file(docx_path, output_path=None, max_words=1200, use_threading=True, max_workers=4):
-    """
-    Read a DOCX file, split it into chunks, and humanize each chunk.
-    
-    Args:
-        docx_path: Path to the input DOCX file
-        output_path: Path to save the humanized text (optional)
-        max_words: Maximum words per chunk (default: 1200)
-        use_threading: Whether to use threading for DOCX processing (default: True)
-        max_workers: Maximum number of worker threads (default: 4)
-        
-    Returns:
-        String containing all humanized text
-    """
-    print(f"\n{'='*60}")
-    print(f"Processing DOCX file: {docx_path}")
-    print(f"{'='*60}\n")
-    
-    print("Reading DOCX file...")
-    start_time = time.time()
-    original_text = read_docx(docx_path, use_threading=use_threading, max_workers=max_workers)
-    read_time = time.time() - start_time
-    
-    print(f"✓ DOCX loaded in {read_time:.2f} seconds")
-    print(f"Total characters: {len(original_text)}")
-    print(f"Total words: {len(original_text.split())}")
-    
-    print(f"\nSplitting text into {max_words}-word chunks...")
-    chunks = split_text_by_words(original_text, max_words)
-    print(f"Created {len(chunks)} chunks")
-    
-    humanized_chunks = []
-    failed_chunks = []
-    base_name = os.path.splitext(docx_path)[0] # Base name without extension
-    chunk_folder = base_name + "_chunks"
-    
-    if not os.path.exists(chunk_folder):
-        os.makedirs(chunk_folder)
-        print(f"Created folder: {chunk_folder}")
-    # -------------------------------------------------------------------------
-    # Save a single chunk to a DOCX
-    # -------------------------------------------------------------------------
-    def save_chunk_docx(text, path):
-        doc = Document()
-        for line in text.split("\n"):
-            doc.add_paragraph(line)
-        doc.save(path)
-
-    for i, chunk in enumerate(chunks, 1):
-        print(f"\n{'='*60}")
-        print(f"Processing chunk {i}/{len(chunks)} ({len(chunk.split())} words)")
-        print(f"{'='*60}")
-        
-        #humanized = get_texttohuman_humanizer(chunk)
-        humanized = None
-        # -------------------------------
-        # 🔁 Retry up to 3 times
-        # -------------------------------
-        for attempt in range(1, 4):
-            print(f" → Attempt {attempt}/3")
-
-            humanized = get_texttohuman_humanizer(chunk)
-
-            if humanized:
-                print(f"✓ Chunk {i} succeeded on attempt {attempt}")
-                break
-
-            print(f"✗ Attempt {attempt} failed")
-
-            # After each fail, wait, then retry
-            if attempt < 3:
-                print("Clearing textarea and retrying in 3 seconds...")
-                
-                time.sleep(3)
-
-        # -------------------------------
-        # If still failed after 3 attempts
-        # -------------------------------
-        if not humanized:
-            print(f"✗ Chunk {i} FAILED after 3 attempts — keeping original text")
-            humanized_chunks.append(chunk)
-            failed_chunks.append(i)
-        else:
-            humanized_docx_path = os.path.join(chunk_folder, f"chunk_{i}_humanized.docx")
-            save_chunk_docx(humanized, humanized_docx_path)
-            humanized_chunks.append(humanized)
-
-        if i < len(chunks):
-            print("Waiting 5 seconds before the next chunk...")
-            time.sleep(5)
-    
-    final_text = '\n\n'.join(humanized_chunks)
-    
-    if output_path is None:
-        base_name = os.path.splitext(docx_path)[0]
-        output_path = f"{base_name}_humanized.txt"
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(final_text)
-    
-    # Also save a DOCX version preserving basic formatting (headings, lists, bold)
-    try:
-        from docx import Document as _Document
-
-        def save_text_to_docx(docx_path_out, text):
-            """
-            Save plain/formatted text back into a DOCX file with simple formatting rules:
-            - Lines starting with '#' are treated as headings (number of '#' -> heading level)
-            - Lines matching 'N. text' (with optional indent) are numbered list items
-            - Lines starting with bullet characters (•, -, *) are bulleted list items
-            - Inline bold markers `**bold**` are converted to bold runs
-            """
-            doc_out = _Document()
-
-            for raw_line in text.splitlines():
-                # Preserve empty lines
-                if not raw_line.strip():
-                    doc_out.add_paragraph('')
-                    continue
-
-                line = raw_line.rstrip('\r\n')
-                stripped = line.lstrip()
-                indent = len(line) - len(stripped)
-                level = max(0, indent // 2)
-
-                # Headings: '#', '##', ...
-                if stripped.startswith('#'):
-                    hashes = len(stripped) - len(stripped.lstrip('#'))
-                    heading_text = stripped[hashes:].strip()
-                    heading_level = max(1, min(4, hashes))
+                if ('bg-yellow-100' in mark_class) or ('bg-yellow-900' in mark_class) or \
+                   ('bg-red-100' in mark_class) or ('bg-red-900' in mark_class):
+                    
+                    mark_type = "yellow" if 'yellow' in mark_class else "red"
+                    print(f"\n🔄 Processing {mark_type} mark {i+1}/{len(marks)}")
+                    
+                    mark_text = mark.inner_text()
+                    print(f"   Original text: {mark_text[:80]}...")
+                    
                     try:
-                        doc_out.add_paragraph(heading_text, style=f'Heading {heading_level}')
-                    except Exception:
-                        doc_out.add_paragraph(heading_text)
-                    continue
-
-                # Numbered list: optional indent + number + dot + space
-                m_num = re.match(r"^(\s*)(\d+)\.\s+(.*)$", line)
-                if m_num:
-                    item_text = m_num.group(3).strip()
-                    p = doc_out.add_paragraph(item_text, style='List Number')
-                    if level > 0:
-                        p.paragraph_format.left_indent = Cm(level * 0.5)
-                    continue
-
-                # Bulleted list (•, -, *)
-                m_bul = re.match(r"^(\s*)[•\-*]\s+(.*)$", line)
-                if m_bul:
-                    item_text = m_bul.group(2).strip()
-                    p = doc_out.add_paragraph(item_text, style='List Bullet')
-                    if level > 0:
-                        p.paragraph_format.left_indent = Cm(level * 0.5)
-                    continue
-
-                # Regular paragraph with simple inline bold parsing (**bold**)
-                parts = re.split(r"(\*\*.*?\*\*)", stripped)
-                p = doc_out.add_paragraph()
-                for part in parts:
-                    if part.startswith('**') and part.endswith('**') and len(part) >= 4: # Inline bold
-                        run = p.add_run(part[2:-2])
-                        run.bold = True
-                    else: # Regular text
-                        p.add_run(part)
-
-            doc_out.save(docx_path_out)
-
-        # Choose docx output path
-        base_name = os.path.splitext(docx_path)[0]
-        docx_output_path = f"{base_name}_humanized.docx"
-        # If user explicitly requested a .docx output path, use that
-        if output_path and output_path.lower().endswith('.docx'):
-            docx_output_path = output_path
-
-        save_text_to_docx(docx_output_path, final_text)
-        print(f"\nOutput DOCX saved to: {docx_output_path}")
-    except Exception as e_docx:
-        print(f"Could not write DOCX output: {e_docx}")
-
-
-    print(f"\n{'='*60}")
-    print("PROCESSING COMPLETE")
-    print(f"{'='*60}")
-    print(f"Total chunks: {len(chunks)}")
-    print(f"Successful: {len(chunks) - len(failed_chunks)}")
-    print(f"Failed: {len(failed_chunks)}")
-    if failed_chunks:
-        print(f"Failed chunk numbers: {failed_chunks}")
-    print(f"\nOutput saved to: {output_path}")
-    print(f"{'='*60}\n")
+                        mark.scroll_into_view_if_needed()
+                        time.sleep(1)
+                        mark.click()
+                        
+                        # Wait for dialog
+                        dialog = page.locator('div[role="dialog"]').first
+                        dialog.wait_for(state='visible', timeout=30000)
+                        
+                        # Wait for alternatives to load
+                        dialog.locator('div.space-y-2').first.wait_for(state='visible', timeout=30000)
+                        print("   ✓ Dialog loaded with alternatives")
+                        
+                        # If mark_text is empty, get from textarea
+                        if mark_text.strip() == "":
+                            try:
+                                textarea_in_dialog = dialog.locator('textarea').first
+                                mark_text = textarea_in_dialog.input_value()
+                                print(f"   Retrieved text from textarea: {mark_text[:80]}...")
+                            except Exception as e:
+                                print(f"   ✗ Failed to get textarea text: {e}")
+                                continue
+                        
+                        # Get best alternative
+                        best_alternative_text = get_Zero_Human_Alternative(dialog, page)
+                        
+                        if best_alternative_text is not None:
+                            print(f"   ✓ Best alternative text: {best_alternative_text[:80]}...")
+                            humanize_text1 = humanize_text1.replace(mark_text, best_alternative_text, 1)
+                            print(f"   ✓ Replaced text in humanize_text1")
+                        else:
+                            print("   ✗ No 0% Human alternative found after all retries")
+                        
+                        # Close dialog
+                        try:
+                            close_button = dialog.locator('button[data-slot="dialog-close"]').first
+                            close_button.click()
+                            time.sleep(1)
+                        except Exception as e:
+                            print(f"   ⚠ Failed to close dialog: {e}")
+                            
+                    except Exception as e:
+                        print(f"   ✗ Failed to process mark: {e}")
+                        continue
+        
+        # Save to file
+        with open("humanized_text.txt", "w", encoding="utf-8") as f:
+            f.write(humanize_text1)
+        
+        return humanize_text1
     
-    return final_text
-
-
-
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        return None
 
 if __name__ == "__main__":
     docx_file = r"Manual Introduction.docx"
+    docx_text = read_docx_with_spacing(docx_file)
+    print("=== Processing Document ===")
     
-    if os.path.exists(docx_file):
-        # Use threading with 4 workers (adjust based on your system)
-        result = process_docx_file(
-            docx_file, 
-            max_words=1200,
-            use_threading=True,
-            max_workers=4
-        )
-    else:
-        print(f"File not found: {docx_file}")
-        print("\nTo use this script:")
-        print("1. Place your DOCX file in the same directory")
-        print("2. Update the 'docx_file' variable with your filename")
-        print("3. Run the script again")
-        print("\nThreading is enabled by default for faster DOCX processing!")
-        print("Adjust max_workers parameter based on your CPU cores.")
+    # Enable debug mode: headless=False to see browser, debug=True for screenshots
+    DEBUG_MODE = True  # Set to True to see what's happening
+    
+    with PlaywrightHumanizer(headless=not DEBUG_MODE, debug=DEBUG_MODE) as page:
+        final_humanized_text = ""
+        chunks1 = split_text_preserve_paragraphs_and_newlines(docx_text)
+        
+        print(f"Split into {len(chunks1)} chunks")
+        
+        for i, chunk in enumerate(chunks1, 1):
+            print(f"\n{'='*70}")
+            print(f"Processing Chunk {i}/{len(chunks1)}: {len(chunk.split())} words")
+            print(f"{'='*70}")
+            
+            try:
+                result = get_texttohuman_humanizer_final(chunk, page, save_debug=DEBUG_MODE)
+                if result:
+                    final_humanized_text += result + "\n"
+                    print(f"✓ Chunk {i} completed successfully")
+                else:
+                    print(f"✗ Chunk {i} returned no result")
+                    
+            except Exception as e:
+                print(f"✗ Error processing chunk {i}: {e}")
+                if DEBUG_MODE:
+                    page.screenshot(path=f"error_chunk_{i}.png")
+                    print(f"Error screenshot saved: error_chunk_{i}.png")
+                # Continue with next chunk instead of failing completely
+                continue
+            
+            print()
+        
+        if final_humanized_text:
+            with open("final_humanized_text.txt", "w", encoding="utf-8") as f:
+                f.write(final_humanized_text)
+            
+            print("\n" + "="*70)
+            print("✓ Processing Complete!")
+            print(f"✓ Output saved to: final_humanized_text.txt")
+            print(f"✓ Total length: {len(final_humanized_text)} characters")
+            print("="*70)
+        else:
+            print("\n" + "="*70)
+            print("✗ No text was humanized")
+            print("="*70)
