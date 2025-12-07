@@ -22,11 +22,25 @@ def install_playwright_browsers():
                 subprocess.run([sys.executable, '-m', 'playwright', 'install', 'chromium'], check=True)
                 subprocess.run([sys.executable, '-m', 'playwright', 'install-deps', 'chromium'], check=False)
                 print("Playwright browsers installed successfully!")
+                return True, "Playwright browsers installed successfully!"
             else:
                 print("Playwright browsers already installed")
+                return True, "Playwright browsers already installed"
     except Exception as e:
-        print(f"Warning: Could not install Playwright browsers automatically: {e}")
+        error_msg = f"Warning: Could not install Playwright browsers automatically: {e}"
+        print(error_msg)
         print("Please ensure Playwright is properly installed")
+        return False, error_msg
+
+def manual_install_playwright():
+    """Manually install Playwright browsers - for button trigger"""
+    try:
+        print("Manual installation triggered...")
+        subprocess.run([sys.executable, '-m', 'playwright', 'install', 'chromium'], check=True)
+        subprocess.run([sys.executable, '-m', 'playwright', 'install-deps', 'chromium'], check=False)
+        return True, "✅ Playwright browsers installed successfully!"
+    except Exception as e:
+        return False, f"❌ Installation failed: {str(e)}"
 
 # Run installation check
 install_playwright_browsers()
@@ -219,6 +233,8 @@ if 'output_filename' not in st.session_state:
     st.session_state.output_filename = ""
 if 'input_filename' not in st.session_state:
     st.session_state.input_filename = ""
+if 'installing_playwright' not in st.session_state:
+    st.session_state.installing_playwright = False
 
 def create_docx_from_text(text, preserve_formatting=True):
     """
@@ -321,6 +337,22 @@ with st.sidebar:
         step=100,
         help="Split long texts into chunks of this size"
     )
+    
+    st.markdown("---")
+    st.markdown("### 🔧 System Tools")
+    
+    # Manual Playwright installation button
+    if st.button("🎭 Install Playwright Browsers", disabled=st.session_state.installing_playwright):
+        st.session_state.installing_playwright = True
+        with st.spinner("Installing Playwright browsers..."):
+            success, message = manual_install_playwright()
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
+        st.session_state.installing_playwright = False
+    
+    st.caption("Use this if you encounter browser initialization errors")
     
     st.markdown("---")
     st.markdown("### 📊 Statistics")
