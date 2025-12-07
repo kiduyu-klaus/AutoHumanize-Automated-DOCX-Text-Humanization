@@ -1,3 +1,36 @@
+import sys
+import os
+import asyncio
+import subprocess
+
+# Fix for event loop compatibility
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+# Install Playwright browsers on first run (for Streamlit Cloud)
+def install_playwright_browsers():
+    """Install Playwright browsers if not already installed"""
+    try:
+        # Check if running in Streamlit Cloud
+        if os.getenv('STREAMLIT_SHARING_MODE') or os.getenv('STREAMLIT_RUNTIME_ENV'):
+            print("Detected Streamlit Cloud environment")
+            
+            # Check if browsers are installed
+            browser_path = os.path.expanduser('~/.cache/ms-playwright')
+            if not os.path.exists(browser_path) or not os.listdir(browser_path):
+                print("Installing Playwright browsers...")
+                subprocess.run([sys.executable, '-m', 'playwright', 'install', 'chromium'], check=True)
+                subprocess.run([sys.executable, '-m', 'playwright', 'install-deps', 'chromium'], check=False)
+                print("Playwright browsers installed successfully!")
+            else:
+                print("Playwright browsers already installed")
+    except Exception as e:
+        print(f"Warning: Could not install Playwright browsers automatically: {e}")
+        print("Please ensure Playwright is properly installed")
+
+# Run installation check
+install_playwright_browsers()
+
 import streamlit as st
 import time
 from texttohuman import (
@@ -12,7 +45,12 @@ from docx import Document
 from docx.shared import Pt
 from io import BytesIO
 from datetime import datetime
+import sys
+import asyncio
 
+# Fix for Windows + Playwright + Streamlit compatibility
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 # Page configuration
 st.set_page_config(
     page_title="autohumanize-app : AI Text Humanizer",

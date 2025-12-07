@@ -1,3 +1,5 @@
+import asyncio
+import sys
 import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 import random
@@ -16,6 +18,12 @@ LIST_OF_USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ]
+import sys
+import asyncio
+
+# Fix for Windows + Playwright + Streamlit compatibility
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 WEBSITE_URL = "https://texttohuman.com"
 # Thread-safe print lock
@@ -336,17 +344,6 @@ def get_texttohuman_humanizer_final(humanize_text, page, timeout=30000, save_deb
         
         # Method 1: Try using clipboard paste button
         try:
-            pyperclip.copy(humanize_text)
-            paste_button = page.locator('button.bg-primary\\/10').first
-            
-            if paste_button.is_visible(timeout=5000):
-                print("Found paste button, clicking...")
-                paste_button.click()
-                time.sleep(2)
-            else:
-                raise Exception("Paste button not visible")
-        except Exception as e:
-            print(f"Paste button method failed: {e}")
             print("Trying direct input method...")
             
             # Method 2: Direct fill
@@ -359,6 +356,18 @@ def get_texttohuman_humanizer_final(humanize_text, page, timeout=30000, save_deb
                 textarea.click()
                 page.keyboard.insert_text(humanize_text)
                 time.sleep(1)
+            
+        except Exception as e:
+            print(f"Paste button method failed: {e}")
+            pyperclip.copy(humanize_text)
+            paste_button = page.locator('button.bg-primary\\/10').first
+            
+            if paste_button.is_visible(timeout=5000):
+                print("Found paste button, clicking...")
+                paste_button.click()
+                time.sleep(2)
+            else:
+                raise Exception("Paste button not visible")
         
         # Verify text was entered
         current_value = textarea.input_value()
