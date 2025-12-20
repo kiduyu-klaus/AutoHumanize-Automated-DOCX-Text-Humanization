@@ -1,14 +1,93 @@
 import streamlit as st
 import time
+import subprocess
+import os
+import sys
+from pathlib import Path
+
+# Function to check and install Playwright browsers
+def ensure_playwright_installed():
+    """Check if Playwright browsers are installed, install if not"""
+    cache_dir = Path.home() / ".cache" / "ms-playwright"
+    
+    # Check if chromium is installed
+    chromium_installed = False
+    if cache_dir.exists():
+        for item in cache_dir.iterdir():
+            if item.is_dir() and "chromium" in item.name.lower():
+                chromium_installed = True
+                break
+    
+    if not chromium_installed:
+        st.info("🎭 Installing Playwright browsers for the first time... This may take a few minutes.")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            status_text.text("Installing Playwright Chromium browser...")
+            progress_bar.progress(30)
+            
+            # Install chromium browser only
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+            
+            progress_bar.progress(70)
+            
+            if result.returncode != 0:
+                st.error(f"❌ Failed to install Playwright browsers: {result.stderr}")
+                st.info("💡 You may need to manually run: `playwright install chromium`")
+                return False
+            
+            status_text.text("Installing system dependencies...")
+            progress_bar.progress(90)
+            
+            # Try to install dependencies (may fail without sudo, but browser will still work in most cases)
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install-deps", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            
+            progress_bar.progress(100)
+            status_text.text("✅ Playwright installation complete!")
+            time.sleep(2)
+            progress_bar.empty()
+            status_text.empty()
+            
+            return True
+            
+        except subprocess.TimeoutExpired:
+            st.error("❌ Installation timed out. Please try again.")
+            return False
+        except Exception as e:
+            st.error(f"❌ Error during installation: {str(e)}")
+            st.info("💡 You may need to manually run: `playwright install chromium`")
+            return False
+    
+    return True
+
+# Check and install Playwright before importing the module
+if 'playwright_checked' not in st.session_state:
+    st.session_state.playwright_checked = False
+
+if not st.session_state.playwright_checked:
+    ensure_playwright_installed()
+    st.session_state.playwright_checked = True
+
+# Now import the texttohuman module
 from texttohuman import (
     get_huminizer_chrome_driver,
     get_texttohuman_humanizer_final,
-    read_docx_with_spacing, # Kept for compatibility, though not used in new DOCX flow
+    read_docx_with_spacing,
     split_text_preserve_paragraphs_and_newlines,
-    read_docx_and_humanize # New function for DOCX processing
+    read_docx_and_humanize
 )
 import tempfile
-import os
 from docx import Document
 from docx.shared import Pt
 from io import BytesIO
@@ -211,8 +290,6 @@ def create_docx_from_text(text):
     paragraphs = text.split('\n')
     
     for para_text in paragraphs:
-        # Add paragraph. The text area input preserves newlines, so we treat each line as a paragraph.
-        # This is the best we can do for preserving structure from a plain text input.
         doc.add_paragraph(para_text)
     
     # Save to BytesIO buffer
@@ -263,14 +340,12 @@ def process_text_chunks(text, driver, chunk_size):
         try:
             result = get_texttohuman_humanizer_final(chunk, driver, save_debug=False)
             if result:
-                # Use a single newline to join chunks, as the chunk content already contains internal newlines
                 final_humanized_text += result + "\n"
             else:
                 st.warning(f"Chunk {i} returned no result. Skipping.")
                 
         except Exception as e:
             st.error(f"Error processing chunk {i}: {e}")
-            # Continue with next chunk instead of failing completely
             continue
             
     return final_humanized_text.strip()
@@ -284,7 +359,6 @@ def handle_process_click():
     st.session_state.docx_buffer = None
     
     if st.session_state.input_method == "Upload DOCX":
-        # DOCX flow: The humanization is done inside read_docx_and_humanize
         if 'uploaded_file_path' not in st.session_state or not st.session_state.uploaded_file_path:
             st.error("Please upload a DOCX file first.")
             st.session_state.processing = False
@@ -292,7 +366,6 @@ def handle_process_click():
         
         with st.spinner("Initializing browser and humanizing DOCX... This may take a moment."):
             try:
-                # Initialize driver (PlaywrightHumanizer context manager handles it)
                 from texttohuman import PlaywrightHumanizer
                 with PlaywrightHumanizer(headless=True, debug=False) as driver:
                     st.session_state.docx_buffer = read_docx_and_humanize(
@@ -304,12 +377,10 @@ def handle_process_click():
                 if st.session_state.docx_buffer:
                     st.success("✅ DOCX Humanization Complete!")
                     
-                    # Read the text from the humanized DOCX for display in the output text area
                     humanized_doc = Document(st.session_state.docx_buffer)
                     humanized_text = "\n".join([p.text for p in humanized_doc.paragraphs])
                     st.session_state.humanized_text = humanized_text
                     
-                    # Save the DOCX file to the output folder
                     st.session_state.output_filename = save_docx_to_output(
                         st.session_state.docx_buffer, 
                         st.session_state.input_filename
@@ -320,7 +391,6 @@ def handle_process_click():
             except Exception as e:
                 st.error(f"An unexpected error occurred during DOCX processing: {e}")
             finally:
-                # Clean up temp file
                 if 'uploaded_file_path' in st.session_state and os.path.exists(st.session_state.uploaded_file_path):
                     os.remove(st.session_state.uploaded_file_path)
                     del st.session_state.uploaded_file_path
@@ -328,7 +398,6 @@ def handle_process_click():
                 st.rerun()
                 
     else:
-        # Text input flow
         input_text = st.session_state.text_input
         if not input_text.strip():
             st.error("Please enter some text to humanize.")
@@ -337,7 +406,6 @@ def handle_process_click():
             
         with st.spinner("Initializing browser and humanizing text... This may take a moment."):
             try:
-                # Initialize driver (PlaywrightHumanizer context manager handles it)
                 from texttohuman import PlaywrightHumanizer
                 with PlaywrightHumanizer(headless=True, debug=False) as driver:
                     humanized_text = process_text_chunks(
@@ -350,10 +418,8 @@ def handle_process_click():
                     st.session_state.humanized_text = humanized_text
                     st.success("✅ Text Humanization Complete!")
                     
-                    # Create DOCX buffer for download and saving
                     st.session_state.docx_buffer = create_docx_from_text(humanized_text)
                     
-                    # Save the DOCX file to the output folder
                     st.session_state.output_filename = save_docx_to_output(
                         st.session_state.docx_buffer, 
                         st.session_state.input_filename
@@ -397,7 +463,6 @@ with st.sidebar:
         st.metric("Words", word_count)
         st.metric("Characters", char_count)
         
-        # Show saved file info
         if st.session_state.output_filename:
             st.markdown("---")
             st.markdown("### 💾 Saved File")
@@ -426,7 +491,6 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("### 📝 Input")
     
-    # Tab selection for input method
     input_method = st.radio(
         "Choose input method:",
         ["Type/Paste Text", "Upload DOCX"],
@@ -444,7 +508,6 @@ with col1:
             key="text_input"
         )
         st.session_state.input_filename = "manual_input"
-        # Clear DOCX related state
         if 'uploaded_file_path' in st.session_state:
             del st.session_state.uploaded_file_path
     else:
@@ -455,17 +518,14 @@ with col1:
         )
         
         if uploaded_file is not None:
-            # Save uploaded file temporarily
             with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
                 st.session_state.uploaded_file_path = tmp_file.name
             
-            # Store original filename (without extension)
             st.session_state.input_filename = os.path.splitext(uploaded_file.name)[0]
             
             st.success(f"File uploaded: {uploaded_file.name}")
         else:
-            # Clear file path if file is removed
             if 'uploaded_file_path' in st.session_state:
                 os.remove(st.session_state.uploaded_file_path)
                 del st.session_state.uploaded_file_path
@@ -492,7 +552,6 @@ with col2:
     col_dl1, col_dl2 = st.columns(2)
     
     if st.session_state.humanized_text:
-        # Download as DOCX
         if st.session_state.docx_buffer:
             docx_filename = f"{st.session_state.input_filename}_humanized.docx"
             col_dl1.download_button(
@@ -505,7 +564,6 @@ with col2:
         else:
             col_dl1.info("DOCX not available for download.")
             
-        # Download as TXT
         txt_filename = f"{st.session_state.input_filename}_humanized.txt"
         col_dl2.download_button(
             label="⬇️ Download TXT",
@@ -514,9 +572,6 @@ with col2:
             mime="text/plain",
             use_container_width=True
         )
-        
-        # Copy to clipboard (requires custom JS/HTML, which is complex in Streamlit, so we'll skip for now or rely on the user to copy from the text area)
-        # st.button("📋 Copy to Clipboard", use_container_width=True)
     else:
         col_dl1.info("Output will appear here.")
         col_dl2.info("Output will appear here.")
