@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import time
+from io import BytesIO
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 import random
 from docx import Document
