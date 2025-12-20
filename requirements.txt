@@ -1,6 +1,7 @@
 streamlit
 python-docx
-undetected-chromedriver
+setuptools
+undetected-chromedriver>=3.5.5
 pyperclip
 selenium
 lxml
