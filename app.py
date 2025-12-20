@@ -3,8 +3,9 @@ import time
 from texttohuman import (
     get_huminizer_chrome_driver,
     get_texttohuman_humanizer_final,
-    read_docx_with_spacing,
-    split_text_preserve_paragraphs_and_newlines
+    read_docx_with_spacing, # Kept for compatibility, though not used in new DOCX flow
+    split_text_preserve_paragraphs_and_newlines,
+    read_docx_and_humanize # New function for DOCX processing
 )
 import tempfile
 import os
@@ -183,14 +184,17 @@ if 'output_filename' not in st.session_state:
     st.session_state.output_filename = ""
 if 'input_filename' not in st.session_state:
     st.session_state.input_filename = ""
+if 'docx_buffer' not in st.session_state:
+    st.session_state.docx_buffer = None
+if 'input_method' not in st.session_state:
+    st.session_state.input_method = "Type/Paste Text"
 
-def create_docx_from_text(text, preserve_formatting=True):
+def create_docx_from_text(text):
     """
-    Create a DOCX document from text while preserving formatting.
+    Create a DOCX document from text, preserving paragraph structure (newlines).
     
     Args:
         text: str - The text to convert to DOCX
-        preserve_formatting: bool - Whether to preserve paragraph structure
         
     Returns:
         BytesIO: Buffer containing the DOCX file
@@ -203,18 +207,13 @@ def create_docx_from_text(text, preserve_formatting=True):
     font.name = 'Calibri'
     font.size = Pt(11)
     
-    if preserve_formatting:
-        # Split text by paragraphs and add them to document
-        paragraphs = text.split('\n')
-        
-        for para_text in paragraphs:
-            if para_text.strip():  # Add non-empty paragraphs
-                doc.add_paragraph(para_text)
-            else:  # Preserve empty lines
-                doc.add_paragraph()
-    else:
-        # Add as single paragraph
-        doc.add_paragraph(text)
+    # Split text by paragraphs and add them to document
+    paragraphs = text.split('\n')
+    
+    for para_text in paragraphs:
+        # Add paragraph. The text area input preserves newlines, so we treat each line as a paragraph.
+        # This is the best we can do for preserving structure from a plain text input.
+        doc.add_paragraph(para_text)
     
     # Save to BytesIO buffer
     buffer = BytesIO()
@@ -223,12 +222,12 @@ def create_docx_from_text(text, preserve_formatting=True):
     
     return buffer
 
-def save_docx_to_output(text, filename):
+def save_docx_to_output(buffer, filename):
     """
-    Save humanized text to output folder as DOCX file.
+    Save DOCX buffer to output folder.
     
     Args:
-        text: str - The humanized text
+        buffer: BytesIO - The DOCX file buffer
         filename: str - Base filename (without extension)
     """
     try:
@@ -236,34 +235,137 @@ def save_docx_to_output(text, filename):
         output_dir = "output"
         os.makedirs(output_dir, exist_ok=True)
         
-        # Create DOCX
-        doc = Document()
-        
-        # Set default font
-        style = doc.styles['Normal']
-        font = style.font
-        font.name = 'Calibri'
-        font.size = Pt(11)
-        
-        # Add paragraphs
-        paragraphs = text.split('\n')
-        for para_text in paragraphs:
-            if para_text.strip():
-                doc.add_paragraph(para_text)
-            else:
-                doc.add_paragraph()
-        
         # Generate output filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_path = os.path.join(output_dir, f"{filename}_{timestamp}.docx")
+        output_path = os.path.join(output_dir, f"{filename}_humanized_{timestamp}.docx")
         
         # Save document
-        doc.save(output_path)
+        with open(output_path, "wb") as f:
+            f.write(buffer.getbuffer())
         
         return output_path
     except Exception as e:
         st.error(f"❌ Error saving DOCX: {str(e)}")
         return None
+
+def process_text_chunks(text, driver, chunk_size):
+    """
+    Splits text into chunks, humanizes each chunk, and returns the combined result.
+    """
+    final_humanized_text = ""
+    chunks = split_text_preserve_paragraphs_and_newlines(text, chunk_size)
+    
+    st.info(f"Text split into {len(chunks)} chunks for processing.")
+    
+    for i, chunk in enumerate(chunks, 1):
+        st.info(f"Processing Chunk {i}/{len(chunks)}...")
+        
+        try:
+            result = get_texttohuman_humanizer_final(chunk, driver, save_debug=False)
+            if result:
+                # Use a single newline to join chunks, as the chunk content already contains internal newlines
+                final_humanized_text += result + "\n"
+            else:
+                st.warning(f"Chunk {i} returned no result. Skipping.")
+                
+        except Exception as e:
+            st.error(f"Error processing chunk {i}: {e}")
+            # Continue with next chunk instead of failing completely
+            continue
+            
+    return final_humanized_text.strip()
+
+def handle_process_click():
+    """
+    Handles the main processing logic when the button is clicked.
+    """
+    st.session_state.processing = True
+    st.session_state.humanized_text = ""
+    st.session_state.docx_buffer = None
+    
+    if st.session_state.input_method == "Upload DOCX":
+        # DOCX flow: The humanization is done inside read_docx_and_humanize
+        if 'uploaded_file_path' not in st.session_state or not st.session_state.uploaded_file_path:
+            st.error("Please upload a DOCX file first.")
+            st.session_state.processing = False
+            return
+        
+        with st.spinner("Initializing browser and humanizing DOCX... This may take a moment."):
+            try:
+                # Initialize driver (PlaywrightHumanizer context manager handles it)
+                from texttohuman import PlaywrightHumanizer
+                with PlaywrightHumanizer(headless=True, debug=False) as driver:
+                    st.session_state.docx_buffer = read_docx_and_humanize(
+                        st.session_state.uploaded_file_path, 
+                        driver, 
+                        chunk_size=st.session_state.chunk_size
+                    )
+                
+                if st.session_state.docx_buffer:
+                    st.success("✅ DOCX Humanization Complete!")
+                    
+                    # Read the text from the humanized DOCX for display in the output text area
+                    humanized_doc = Document(st.session_state.docx_buffer)
+                    humanized_text = "\n".join([p.text for p in humanized_doc.paragraphs])
+                    st.session_state.humanized_text = humanized_text
+                    
+                    # Save the DOCX file to the output folder
+                    st.session_state.output_filename = save_docx_to_output(
+                        st.session_state.docx_buffer, 
+                        st.session_state.input_filename
+                    )
+                else:
+                    st.error("❌ DOCX Humanization Failed. Check logs for details.")
+                    
+            except Exception as e:
+                st.error(f"An unexpected error occurred during DOCX processing: {e}")
+            finally:
+                # Clean up temp file
+                if 'uploaded_file_path' in st.session_state and os.path.exists(st.session_state.uploaded_file_path):
+                    os.remove(st.session_state.uploaded_file_path)
+                    del st.session_state.uploaded_file_path
+                st.session_state.processing = False
+                st.rerun()
+                
+    else:
+        # Text input flow
+        input_text = st.session_state.text_input
+        if not input_text.strip():
+            st.error("Please enter some text to humanize.")
+            st.session_state.processing = False
+            return
+            
+        with st.spinner("Initializing browser and humanizing text... This may take a moment."):
+            try:
+                # Initialize driver (PlaywrightHumanizer context manager handles it)
+                from texttohuman import PlaywrightHumanizer
+                with PlaywrightHumanizer(headless=True, debug=False) as driver:
+                    humanized_text = process_text_chunks(
+                        input_text, 
+                        driver, 
+                        st.session_state.chunk_size
+                    )
+                
+                if humanized_text:
+                    st.session_state.humanized_text = humanized_text
+                    st.success("✅ Text Humanization Complete!")
+                    
+                    # Create DOCX buffer for download and saving
+                    st.session_state.docx_buffer = create_docx_from_text(humanized_text)
+                    
+                    # Save the DOCX file to the output folder
+                    st.session_state.output_filename = save_docx_to_output(
+                        st.session_state.docx_buffer, 
+                        st.session_state.input_filename
+                    )
+                else:
+                    st.error("❌ Text Humanization Failed. Check logs for details.")
+                    
+            except Exception as e:
+                st.error(f"An unexpected error occurred during text processing: {e}")
+            finally:
+                st.session_state.processing = False
+                st.rerun()
 
 # Header
 st.markdown("""
@@ -283,6 +385,7 @@ with st.sidebar:
         max_value=3000,
         value=2000,
         step=100,
+        key="chunk_size",
         help="Split long texts into chunks of this size"
     )
     
@@ -327,12 +430,13 @@ with col1:
     input_method = st.radio(
         "Choose input method:",
         ["Type/Paste Text", "Upload DOCX"],
-        horizontal=True
+        horizontal=True,
+        key="input_method"
     )
     
     input_text = ""
     
-    if input_method == "Type/Paste Text":
+    if st.session_state.input_method == "Type/Paste Text":
         input_text = st.text_area(
             "Enter your text here:",
             height=400,
@@ -340,6 +444,9 @@ with col1:
             key="text_input"
         )
         st.session_state.input_filename = "manual_input"
+        # Clear DOCX related state
+        if 'uploaded_file_path' in st.session_state:
+            del st.session_state.uploaded_file_path
     else:
         uploaded_file = st.file_uploader(
             "Upload a DOCX file",
@@ -351,171 +458,72 @@ with col1:
             # Save uploaded file temporarily
             with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
-                tmp_file_path = tmp_file.name
-            
-            # Read the DOCX file
-            input_text = read_docx_with_spacing(tmp_file_path)
+                st.session_state.uploaded_file_path = tmp_file.name
             
             # Store original filename (without extension)
             st.session_state.input_filename = os.path.splitext(uploaded_file.name)[0]
             
-            # Clean up temp file
-            os.unlink(tmp_file_path)
+            st.success(f"File uploaded: {uploaded_file.name}")
+        else:
+            # Clear file path if file is removed
+            if 'uploaded_file_path' in st.session_state:
+                os.remove(st.session_state.uploaded_file_path)
+                del st.session_state.uploaded_file_path
+            st.session_state.input_filename = ""
             
-            if input_text:
-                st.success(f"✅ File loaded successfully! ({len(input_text.split())} words)")
-                with st.expander("Preview uploaded text"):
-                    st.text_area(label="Preview", value=input_text, height=200, disabled=True)
-            else:
-                st.error("❌ Failed to read the file. Please check the file format.")
+    st.button(
+        "✨ Humanize Text",
+        on_click=handle_process_click,
+        disabled=st.session_state.processing,
+        use_container_width=True
+    )
 
 with col2:
-    st.markdown("### ✨ Humanized Output")
+    st.markdown("### 📄 Output")
+    
+    st.text_area(
+        "Humanized Text",
+        st.session_state.humanized_text,
+        height=400,
+        key="output_text",
+        disabled=True
+    )
+    
+    col_dl1, col_dl2 = st.columns(2)
     
     if st.session_state.humanized_text:
-        output_container = st.container()
-        with output_container:
-            st.text_area(
-                label="Humanized Text",
-                value=st.session_state.humanized_text,
-                height=400,
-                key="output_text",
-                disabled=True
+        # Download as DOCX
+        if st.session_state.docx_buffer:
+            docx_filename = f"{st.session_state.input_filename}_humanized.docx"
+            col_dl1.download_button(
+                label="⬇️ Download DOCX",
+                data=st.session_state.docx_buffer,
+                file_name=docx_filename,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
             )
-            
-            # Download buttons row
-            col_download1, col_download2 = st.columns(2)
-            
-            with col_download1:
-                # Download as TXT
-                txt_data = st.session_state.humanized_text.encode('utf-8')
-                txt_filename = f"{st.session_state.input_filename}_humanized_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                st.download_button(
-                    label="💾 Download as TXT",
-                    data=txt_data,
-                    file_name=txt_filename,
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            
-            with col_download2:
-                # Download as DOCX
-                docx_buffer = create_docx_from_text(st.session_state.humanized_text)
-                docx_filename = f"{st.session_state.input_filename}_humanized_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-                st.download_button(
-                    label="📄 Download as DOCX",
-                    data=docx_buffer,
-                    file_name=docx_filename,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True
-                )
-            
-            # Copy button
-            if st.button("📋 Copy to Clipboard", key="copy_btn", use_container_width=True):
-                st.code(st.session_state.humanized_text, language=None)
-                st.success("✅ Text copied! Use Ctrl+C / Cmd+C to copy from the box above.")
-            
-            # Show auto-saved file location
-            if st.session_state.output_filename:
-                st.info(f"💾 Auto-saved to: {st.session_state.output_filename}")
-    else:
-        st.info("👈 Enter text or upload a document and click 'Humanize Text' to see results here.")
-
-# Humanize button
-st.markdown("---")
-col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-
-with col_btn2:
-    if st.button("🚀 Humanize Text", disabled=st.session_state.processing, key="humanize_btn"):
-        if not input_text or not input_text.strip():
-            st.error("⚠️ Please enter some text or upload a document first!")
         else:
-            st.session_state.processing = True
-            st.session_state.humanized_text = ""
-            st.session_state.output_filename = ""
+            col_dl1.info("DOCX not available for download.")
             
-            # Progress tracking
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            try:
-                # Initialize driver
-                status_text.text("🔄 Initializing browser...")
-                progress_bar.progress(10)
-                driver = get_huminizer_chrome_driver()
-                st.session_state.driver = driver
-                
-                # Split text into chunks
-                status_text.text("🔄 Processing text chunks...")
-                progress_bar.progress(20)
-                chunks = split_text_preserve_paragraphs_and_newlines(input_text, chunk_size)
-                
-                total_chunks = len(chunks)
-                st.info(f"📊 Processing {total_chunks} chunk(s)...")
-                
-                humanized_chunks = []
-                
-                for i, chunk in enumerate(chunks):
-                    status_text.text(f"🔄 Humanizing chunk {i+1}/{total_chunks}...")
-                    progress = 20 + (60 * (i / total_chunks))
-                    progress_bar.progress(int(progress))
-                    
-                    # Humanize chunk
-                    humanized_chunk = get_texttohuman_humanizer_final(
-                        chunk,
-                        driver,
-                        timeout=30
-                    )
-                    
-                    if humanized_chunk:
-                        humanized_chunks.append(humanized_chunk)
-                    else:
-                        st.warning(f"⚠️ Chunk {i+1} failed to process")
-                
-                # Combine results
-                status_text.text("✅ Finalizing...")
-                progress_bar.progress(85)
-                
-                st.session_state.humanized_text = "\n\n".join(humanized_chunks)
-                
-                # Auto-save to DOCX in output folder
-                status_text.text("💾 Saving to DOCX...")
-                progress_bar.progress(95)
-                
-                base_filename = f"{st.session_state.input_filename}_humanized"
-                output_path = save_docx_to_output(
-                    st.session_state.humanized_text,
-                    base_filename
-                )
-                
-                if output_path:
-                    st.session_state.output_filename = output_path
-                
-                progress_bar.progress(100)
-                status_text.text("✅ Complete!")
-                
-                # Show success message
-                st.success(f"🎉 Text humanized successfully!")
-                if output_path:
-                    st.success(f"💾 Saved to: {output_path}")
-                
-                time.sleep(1)
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ An error occurred: {str(e)}")
-            
-            finally:
-                # Quit driver after all processing is complete
-                if st.session_state.driver:
-                    st.session_state.driver.quit()
-                    st.session_state.driver = None
-                st.session_state.processing = False
-
-# Footer
+        # Download as TXT
+        txt_filename = f"{st.session_state.input_filename}_humanized.txt"
+        col_dl2.download_button(
+            label="⬇️ Download TXT",
+            data=st.session_state.humanized_text.encode('utf-8'),
+            file_name=txt_filename,
+            mime="text/plain",
+            use_container_width=True
+        )
+        
+        # Copy to clipboard (requires custom JS/HTML, which is complex in Streamlit, so we'll skip for now or rely on the user to copy from the text area)
+        # st.button("📋 Copy to Clipboard", use_container_width=True)
+    else:
+        col_dl1.info("Output will appear here.")
+        col_dl2.info("Output will appear here.")
+        
 st.markdown("---")
 st.markdown("""
-    <div style="text-align: center; color: white; padding: 1rem;">
-        <p>Made with ❤️ using Streamlit | © 2024 AI Text Humanizer</p>
+    <div class="info-box">
+        **Note on Formatting:** For DOCX uploads, the original document structure (headings, tables, bold text) is preserved by editing the document in place. For text input, newlines are treated as paragraph breaks to maintain structure.
     </div>
 """, unsafe_allow_html=True)
